@@ -1,0 +1,19 @@
+{
+  "rev": 0,
+  "diagram": {
+    "nodes": [
+      { "id": "planilha", "text": "Gerar planilha + e-mails", "x": 170, "y": 200, "start": true },
+      { "id": "upload", "text": "Upload da planilha", "x": 460, "y": 110 },
+      { "id": "backup", "text": "Backup", "x": 460, "y": 290 },
+      { "id": "aviso", "text": "Avisar fim", "x": 760, "y": 200 },
+      { "id": "alerta", "text": "Alerta de falha", "x": 170, "y": 360 }
+    ],
+    "edges": [
+      { "id": "e1", "from": "planilha", "to": "upload", "text": "planilha_pronta" },
+      { "id": "e2", "from": "planilha", "to": "backup", "text": "planilha_pronta" },
+      { "id": "e3", "from": "upload", "to": "aviso", "text": "" },
+      { "id": "e4", "from": "planilha", "to": "aviso", "text": "" },
+      { "id": "e5", "from": "planilha", "to": "alerta", "text": "falha" }
+    ]
+  }
+}

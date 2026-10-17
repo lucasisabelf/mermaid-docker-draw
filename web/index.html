@@ -1,0 +1,144 @@
+<!doctype html>
+<html lang="pt-BR">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>mermaid-docker-draw</title>
+  </head>
+  <body>
+    <header class="topbar">
+      <h1>mermaid-docker-draw</h1>
+      <div class="run-controls">
+        <button id="btn-run" class="primary" type="button">▶ Rodar</button>
+        <button id="btn-stop" type="button" title="Para todos os containers da execução">■ Parar</button>
+        <label class="safe-run" title="Pede confirmação antes de rodar, parar ou reiniciar">
+          <input type="checkbox" id="safe-run" checked /> Safe-run
+        </label>
+        <span id="run-status" class="run-status"></span>
+        <button id="btn-back" type="button" hidden title="Volta a mostrar a execução atual">Voltar à atual</button>
+      </div>
+      <div class="actions">
+        <button id="btn-svg" type="button" title="Baixa o desenho do canvas como SVG">Exportar SVG</button>
+        <button id="btn-png" type="button" title="Baixa o desenho do canvas como PNG">Exportar PNG</button>
+        <button id="btn-copy" type="button">Copiar código</button>
+        <button id="btn-clear" type="button">Limpar</button>
+      </div>
+    </header>
+    <main class="layout">
+      <aside class="palette">
+        <div class="panel-title">Componentes</div>
+        <div class="tool" role="button" tabindex="0" draggable="true" data-tool="rect" title="Arraste para o canvas">
+          <svg viewBox="0 0 40 24" aria-hidden="true"><rect x="2" y="3" width="36" height="18" rx="6" /></svg>
+          <span>Container</span>
+        </div>
+        <div class="tool" role="button" tabindex="0" draggable="true" data-tool="arrow" title="Arraste até um retângulo ou clique para o modo seta">
+          <svg viewBox="0 0 40 24" aria-hidden="true"><line x1="4" y1="12" x2="30" y2="12" /><path d="M28 6 L37 12 L28 18 Z" /></svg>
+          <span>Gatilho</span>
+        </div>
+        <div class="panel-title palette-section">Templates</div>
+        <div id="templates" class="templates"></div>
+        <p class="hint" id="hint"></p>
+        <details class="legend">
+          <summary>Gatilhos</summary>
+          <dl>
+            <dt><i>vazio</i> / success</dt><dd>terminou com código 0</dd>
+            <dt>failure / falha</dt><dd>terminou com erro</dd>
+            <dt>exit / fim</dt><dd>terminou, com qualquer código</dd>
+            <dt>start / inicio</dt><dd>o container iniciou</dd>
+            <dt>log:/regex/</dt><dd>uma linha da saída casou</dd>
+            <dt><i>nome</i></dt><dd>o container imprimiu <code>::mdd emit nome</code> no meio do processo</dd>
+          </dl>
+        </details>
+      </aside>
+      <section class="center">
+        <section class="canvas" id="canvas"></section>
+        <section class="drawer" id="drawer" data-tab="logs">
+          <div class="drawer-head">
+            <div class="tabs">
+              <button type="button" class="tab active" data-drawer-tab="logs">Logs</button>
+              <button type="button" class="tab" data-drawer-tab="history">Histórico</button>
+            </div>
+            <span id="logs-title" class="drawer-title"></span>
+            <a id="logs-link" class="port-link" target="_blank" rel="noopener" hidden></a>
+            <button id="btn-restart" type="button" hidden></button>
+            <button id="btn-drawer" type="button" class="icon" title="Recolher/expandir">▾</button>
+          </div>
+          <div id="logs" class="logs drawer-pane" data-pane="logs"></div>
+          <div id="history" class="history drawer-pane" data-pane="history"></div>
+        </section>
+      </section>
+      <aside class="side">
+        <div class="panel node-panel" id="node-panel">
+          <div class="np-head">
+            <div class="panel-title np-title">Retângulo</div>
+            <div class="tabs">
+              <button type="button" class="tab active" data-np-tab="simple">Simples</button>
+              <button type="button" class="tab" data-np-tab="code">Código</button>
+              <button type="button" class="tab" data-np-tab="files">Arquivos</button>
+            </div>
+          </div>
+          <p class="np-empty hint">Selecione um retângulo para configurar o container dele (nodes/&lt;id&gt;.md).</p>
+          <div class="np-body" hidden>
+            <label class="check"><input type="checkbox" id="np-start" /> Bloco de início <kbd>I</kbd></label>
+            <div class="np-simple">
+              <label>Descrição (markdown)<textarea id="np-desc" rows="3" spellcheck="false"></textarea></label>
+              <label>Imagem<input id="np-image" placeholder="alpine:3.20" spellcheck="false" /></label>
+              <label>Comando<input id="np-command" placeholder='["sh", "-c", "echo oi"]' spellcheck="false" /></label>
+              <label>Variáveis (CHAVE=valor por linha)<textarea id="np-env" rows="2" spellcheck="false"></textarea></label>
+              <label>Volumes (um por linha)<textarea id="np-volumes" rows="2" placeholder="./dados:/dados" spellcheck="false"></textarea></label>
+              <label>Portas (uma por linha)<textarea id="np-ports" rows="1" placeholder="8080:80" spellcheck="false"></textarea></label>
+              <div class="row">
+                <label>Espera
+                  <select id="np-wait">
+                    <option value="all">todas as setas</option>
+                    <option value="any">a primeira seta</option>
+                  </select>
+                </label>
+                <label>Tipo
+                  <select id="np-kind">
+                    <option value="job">job (termina)</option>
+                    <option value="service">serviço (sem fim)</option>
+                  </select>
+                </label>
+              </div>
+            </div>
+            <textarea id="np-code" class="np-code" spellcheck="false" aria-label="Markdown do container"></textarea>
+            <div class="np-files">
+              <div class="np-files-bar">
+                <div class="np-file-list"></div>
+                <button type="button" id="np-file-new" title="Novo arquivo nesta pasta">+ arquivo</button>
+                <button type="button" id="np-file-delete" title="Apaga o arquivo aberto">apagar</button>
+              </div>
+              <textarea id="np-file" class="np-code" spellcheck="false" aria-label="Conteúdo do arquivo"></textarea>
+            </div>
+            <div class="np-status"></div>
+          </div>
+        </div>
+        <div class="panel edge-panel" id="edge-panel" hidden>
+          <div class="panel-title">Seta · <span class="ep-route"></span></div>
+          <div class="ep-question trigger-title"></div>
+          <div class="ep-options"></div>
+          <label class="trigger-custom"><span class="ep-event-label"></span>
+            <input id="ep-event" placeholder="planilha_pronta" spellcheck="false" />
+          </label>
+          <label class="trigger-custom">Quando a saída tiver o texto/regex
+            <input id="ep-log" placeholder="server ready" spellcheck="false" />
+          </label>
+          <p class="trigger-help">No container: <code>echo "::mdd emit nome"</code>. Enter confirma.</p>
+          <p class="trigger-help ep-fired"></p>
+          <button type="button" id="ep-delete" class="danger">Remover seta</button>
+        </div>
+        <div class="panel">
+          <div class="panel-title">Fluxo (Mermaid)</div>
+          <textarea id="code" spellcheck="false" aria-label="Código Mermaid"></textarea>
+          <div id="errors" class="errors"></div>
+        </div>
+        <div class="panel">
+          <div class="panel-title">Preview</div>
+          <div id="preview" class="preview"></div>
+        </div>
+      </aside>
+    </main>
+    <script type="module" src="/src/main.ts"></script>
+  </body>
+</html>

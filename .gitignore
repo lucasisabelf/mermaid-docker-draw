@@ -1,5 +1,11 @@
 node_modules
 dist
 *.log
-diagram.mmd
-diagram.json
+*.tmp
+/bin/
+/diagram.mmd
+/diagram.json
+/nodes/
+/runs/
+/examples/*/runs/
+.removidos/
