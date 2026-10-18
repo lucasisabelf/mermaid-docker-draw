@@ -2,6 +2,7 @@ package api
 
 import (
 	"encoding/json"
+	"net/http"
 	"sync"
 )
 
@@ -61,6 +62,35 @@ func (h *Hub) Publish(v any) {
 		case c.ch <- msg:
 		default:
 			h.drop(c)
+		}
+	}
+}
+
+// Stream atende um navegador em Server-Sent Events: manda `first` e depois cada Publish.
+func (h *Hub) Stream(w http.ResponseWriter, r *http.Request, first ...any) {
+	flusher, ok := w.(http.Flusher)
+	if !ok {
+		http.Error(w, "streaming não suportado", 500)
+		return
+	}
+	w.Header().Set("Content-Type", "text/event-stream")
+	w.Header().Set("Cache-Control", "no-cache")
+	w.Header().Set("Connection", "keep-alive")
+	w.WriteHeader(200)
+	c := h.add(first...)
+	defer h.remove(c)
+	for {
+		select {
+		case msg, ok := <-c.ch:
+			if !ok {
+				return
+			}
+			if _, err := w.Write(msg); err != nil {
+				return
+			}
+			flusher.Flush()
+		case <-r.Context().Done():
+			return
 		}
 	}
 }

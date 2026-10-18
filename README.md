@@ -36,8 +36,8 @@ Esse exemplo está pronto em [`examples/planilha`](examples/planilha):
 ### Com Docker (recomendado)
 
 ```bash
-docker compose up --build                         # abre o exemplo em http://localhost:8080
-MDD_PROJECT=meu-fluxo docker compose up --build   # outra pasta de projeto (relativa a esta)
+docker compose up --build                                  # workspace examples/ em http://localhost:8080
+MDD_WORKSPACE_DIR=meus-fluxos docker compose up --build    # outro workspace (relativo a esta pasta)
 ```
 
 O servidor usa o Docker do host pelo socket `/var/run/docker.sock`.
@@ -48,23 +48,39 @@ O servidor está em Go (1.26+) e o editor em TypeScript com Vite (Node 24+).
 
 ```bash
 npm --prefix web install && npm --prefix web run build
-go run ./cmd/mdd --dir examples/planilha --static "$PWD/web/dist"   # http://localhost:8080
+go run ./cmd/mdd --workspace examples --static web/dist   # http://localhost:8080
 
 # ou, com recarga automática do editor:
-go run ./cmd/mdd --dir examples/planilha &
+go run ./cmd/mdd --workspace examples &
 npm --prefix web run dev                         # Vite em :5173, repassando /api para :8080
 ```
 
 Testes: `go test ./...` e `npm --prefix web test`.
 
-## Projeto
+## Vários mermaids (menu ☰)
+
+O servidor atende um **workspace**, com um mermaid (projeto) por subpasta. O menu ☰, ao lado do título, mostra todos eles:
+- **Busca** por nome. Enter abre o primeiro resultado.
+- **+ Novo** e **Importar .zip**.
+- **Lista:** cada mermaid mostra quantos retângulos tem, um ● quando está rodando e o resultado da última execução. O ☰ ganha um ponto quando algum mermaid está rodando.
+- **▶/■ em cada item:** roda ou para **todos os blocos de início** daquele mermaid **sem precisar abri-lo**. Mermaids diferentes rodam ao mesmo tempo, e trocar de mermaid não para nada.
+- **⋯ em cada item:**
+  - renomear (não pode estar rodando);
+  - duplicar: copia o fluxo e os arquivos, sem o histórico, e troca as portas para não conflitarem;
+  - exportar `.zip`;
+  - apagar: vai para `.removidos/` e sempre pede confirmação.
+
+O mermaid aberto fica na URL (`?p=<pasta>`), e o navegador lembra o último aberto. As portas dos templates nunca se repetem entre os mermaids do workspace.
 
 ```
-meu-fluxo/
-  diagram.json        o fluxo: retângulos, setas, posições (o Mermaid é gerado a partir dele)
-  nodes/<id>.md       um arquivo por retângulo: descrição + serviço do docker compose
-  nodes/<id>/         scripts do retângulo (run.sh, main.py…), editáveis na aba Arquivos
-  runs/<runId>/       histórico: run.json (estado de cada retângulo) e <id>.log (saída)
+workspace/
+  .removidos/              mermaids apagados (dá para recuperar)
+  meu-fluxo/
+    mermaid.json           nome exibido ({"name": "Meu fluxo"})
+    diagram.json           o fluxo: retângulos, setas, posições (o Mermaid é gerado a partir dele)
+    nodes/<id>.md          um arquivo por retângulo: descrição + serviço do docker compose
+    nodes/<id>/            scripts do retângulo (run.sh, main.py…), editáveis na aba Arquivos
+    runs/<runId>/          histórico: run.json (estado de cada retângulo) e <id>.log (saída)
 ```
 
 ### O `.md` de cada retângulo
@@ -162,11 +178,19 @@ wget -qO- --post-data='{"arquivo":"p.csv"}' "$MDD_EMIT_URL/planilha_pronta"   # 
 | Ação | Como fazer |
 |---|---|
 | Marcar o bloco de início | Selecione o retângulo e aperte `I`, ou use o checkbox "Bloco de início". Ele ganha borda dupla e um ▶ |
-| Rodar | ▶ no bloco de início (roda a partir dele) ou **▶ Rodar** na barra (a partir de todos os blocos de início) |
-| Parar | ■ no bloco de início ou **■ Parar** na barra: todos os containers recebem SIGTERM |
+| Escolher o gatilho da seta | Ligue dois retângulos ou clique numa seta: o painel lateral mostra **quando o próximo começa**. A opção padrão é **"Seguir ao próximo ao terminar"**; as outras são "ao terminar com qualquer resultado", "só se falhar", "junto, assim que iniciar", um evento emitido pelo container e um texto/regex do log |
+| Rodar um fluxo | ▶ no bloco de início: roda **só o fluxo dele**. Fluxos sem retângulos em comum rodam ao mesmo tempo, cada um na sua execução |
+| Rodar tudo | **▶ Rodar** na barra: roda cada fluxo que ainda está parado |
+| Parar | ■ no bloco de início (só aquele fluxo) ou **■ Parar** na barra (todas as execuções): os containers recebem SIGTERM |
 | Reiniciar um retângulo | Selecione e clique em **↻ Reiniciar**. Fora de uma execução, o botão vira **▶ Rodar a partir daqui** |
-| Ver os logs | Selecione o retângulo: a saída aparece embaixo, ao vivo. Os eventos `::mdd emit` ficam destacados |
+| Ver os logs | Selecione o retângulo: a saída da execução mais recente dele aparece embaixo, ao vivo. Os eventos `::mdd emit` ficam destacados |
 | Histórico | Aba **Histórico**: clicar numa execução antiga recolore o desenho e carrega os logs dela |
+| Trocar de mermaid | Menu **☰** (veja [Vários mermaids](#vários-mermaids-menu-)) |
+
+**Segurança:**
+- **Safe-run:** o checkbox na barra, marcado por padrão, pede confirmação antes de rodar, parar ou reiniciar.
+- **Idempotência:** clicar várias vezes ou repetir o pedido não abre várias confirmações nem cria várias execuções. Um fluxo que já está rodando devolve a mesma execução.
+- **Arrastar não dispara:** o ▶/■ só dispara num clique de verdade. Arrastar o bloco a partir do botão só move o bloco.
 
 **Cores:**
 - tracejado cinza: aguardando gatilho;
@@ -182,33 +206,50 @@ O resto do editor (criar, ligar, editar, responsável, ativo, exportar) funciona
 
 ## API
 
-São as mesmas rotas do mermaid-draw (`/api/nodes`, `/api/edges`, `/api/diagram`, `/api/diagram.json` e `/api/events`), com o campo `start` nos retângulos. Além delas:
+**Workspace** (a lista de mermaids):
 
 ```bash
-curl -X POST localhost:8080/api/nodes/planilha/inicio          # marca o bloco de início (nao-inicio desmarca)
-curl localhost:8080/api/nodes/planilha/spec                    # o .md do container
-curl -X PUT --data-binary @nodes/planilha.md localhost:8080/api/nodes/planilha/spec
-curl localhost:8080/api/templates                              # templates da paleta
-curl -X POST localhost:8080/api/templates/python-service -d '{"x":200,"y":120}'
-curl localhost:8080/api/nodes/py1/files                        # arquivos de nodes/py1/
-curl -X PUT --data-binary @main.py localhost:8080/api/nodes/py1/files/main.py
-curl -X POST localhost:8080/api/runs -d '{}'                   # roda (ou {"from": "upload"})
-curl localhost:8080/api/runs                                   # histórico
-curl localhost:8080/api/runs/current                           # execução ativa (ou a última)
-curl -X POST localhost:8080/api/runs/<id>/stop
-curl -X POST localhost:8080/api/runs/<id>/nodes/upload/restart
-curl localhost:8080/api/runs/<id>/nodes/upload/logs
+curl localhost:8080/api/projects                                   # lista: nome, retângulos, rodando, última execução
+curl -X POST localhost:8080/api/projects -d '{"name":"Site da loja"}'
+curl -X PATCH localhost:8080/api/projects/site-da-loja -d '{"name":"Loja"}'
+curl -X POST localhost:8080/api/projects/loja/duplicate
+curl -o loja.zip localhost:8080/api/projects/loja/export
+curl -X POST --data-binary @loja.zip 'localhost:8080/api/projects/import?name=Loja 2'
+curl -X POST localhost:8080/api/projects/loja/run                  # roda todos os blocos de início (idempotente)
+curl -X POST localhost:8080/api/projects/loja/stop
+curl -X DELETE localhost:8080/api/projects/loja                    # vai para .removidos/
+curl localhost:8080/api/templates                                  # templates da paleta
 ```
 
-`/api/events` também manda os eventos de execução: `run.state`, `run.started`, `run.node`, `run.log`, `run.trigger` e `run.finished`. Eles não têm `rev`, porque rodar não muda o desenho.
+`GET /api/events` manda a lista de mermaids a cada mudança.
+
+**Cada mermaid** fica em `/api/p/<pasta>/…`. São as mesmas rotas do mermaid-draw (`nodes`, `edges`, `diagram`, `diagram.json` e `events`), com o campo `start` nos retângulos, mais:
+
+```bash
+P=localhost:8080/api/p/planilha
+curl -X POST $P/nodes/planilha/inicio          # marca o bloco de início (nao-inicio desmarca)
+curl $P/nodes/planilha/spec                    # o .md do container
+curl -X PUT --data-binary @nodes/planilha.md $P/nodes/planilha/spec
+curl -X POST $P/templates/python-service -d '{"x":200,"y":120}'
+curl $P/nodes/py1/files                        # arquivos de nodes/py1/
+curl -X PUT --data-binary @main.py $P/nodes/py1/files/main.py
+curl -X POST $P/runs -d '{}'                   # roda cada fluxo (ou {"from": "upload"}); idempotente
+curl $P/runs                                   # histórico
+curl $P/runs/current                           # {runs: rodando, latest: a última que terminou}
+curl -X POST $P/runs/<id>/stop
+curl -X POST $P/runs/<id>/nodes/upload/restart
+curl $P/runs/<id>/nodes/upload/logs
+```
+
+O `/api/p/<pasta>/events` de cada mermaid também manda os eventos de execução: `run.state`, `run.started`, `run.node`, `run.log`, `run.trigger` e `run.finished`. Eles não têm `rev`, porque rodar não muda o desenho.
 
 ## Configuração do servidor
 
 | Flag | Variável | Padrão | |
 |---|---|---|---|
 | `--addr` | `MDD_ADDR` | `:8080` | endereço HTTP |
-| `--dir` | `MDD_DIR` | `.` | pasta do projeto |
+| `--workspace` | `MDD_WORKSPACE` | `workspace` | pasta do workspace (um mermaid por subpasta) |
 | `--static` | `MDD_STATIC` | `web/dist` | editor compilado |
 | `--callback-url` | `MDD_CALLBACK_URL` | `host.docker.internal` (no WSL, o IP da distro) | como os containers chegam ao servidor (`$MDD_EMIT_URL`) |
 | `--network` | `MDD_NETWORK` | | rede Docker dos containers |
-| `--host-dir` | `MDD_HOST_DIR` | | caminho de `--dir` no host, quando o servidor roda em container |
+| `--host-dir` | `MDD_HOST_DIR` | | caminho do workspace no host, quando o servidor roda em container |

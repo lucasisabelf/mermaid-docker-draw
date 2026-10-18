@@ -77,6 +77,13 @@ type API struct {
 	ServerPort int
 	// PortFree confere se uma porta do host está livre (nil: não confere).
 	PortFree func(int) bool
+	// PortStores são os projetos cujas portas publicadas um template novo deve evitar
+	// (no workspace, todos os mermaids); nil usa só este projeto.
+	PortStores func() []nodespec.Store
+	// Prefix é onde esta API está montada (padrão /api; no workspace, /api/p/<slug>).
+	Prefix string
+	// OnChange é chamado (com o lock da API: não pode bloquear) a cada mudança no diagrama.
+	OnChange func()
 }
 
 func New(file string, specs nodespec.Store, hub *Hub) (*API, error) {
@@ -172,6 +179,9 @@ func (a *API) commit(source string, op func(d *diagram.Diagram) (diagram.Event, 
 	msg := ev.Fields()
 	msg["rev"], msg["source"] = a.state.Rev, source
 	a.Hub.Publish(msg)
+	if a.OnChange != nil {
+		a.OnChange()
+	}
 	return ev, nil
 }
 
@@ -240,7 +250,11 @@ func object(r *http.Request) (map[string]json.RawMessage, error) {
 // ServeHTTP atende /api/... (o prefixo vem incluído).
 func (a *API) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	var parts []string
-	for _, p := range strings.Split(strings.TrimPrefix(r.URL.EscapedPath(), "/api"), "/") {
+	prefix := a.Prefix
+	if prefix == "" {
+		prefix = "/api"
+	}
+	for _, p := range strings.Split(strings.TrimPrefix(r.URL.EscapedPath(), prefix), "/") {
 		if p == "" {
 			continue
 		}
@@ -504,7 +518,11 @@ func (a *API) routeTemplates(w http.ResponseWriter, r *http.Request, parts []str
 		return err
 	}
 	id := diagram.NextID(tpl.Prefix, nodeIDs(a.diagram()))
-	port := templates.NextPort(a.specs, a.PortFree, a.ServerPort)
+	stores := []nodespec.Store{a.specs}
+	if a.PortStores != nil {
+		stores = a.PortStores()
+	}
+	port := templates.NextPort(stores, a.PortFree, a.ServerPort)
 	// Os arquivos vêm antes do retângulo: quem receber o node.added já encontra o .md pronto.
 	if err := tpl.Instantiate(a.specs, id, strings.TrimSpace(*p.Text), port); err != nil {
 		return err
@@ -659,6 +677,108 @@ func (a *API) routeEdges(w http.ResponseWriter, r *http.Request, parts []string,
 
 // ---- execuções -------------------------------------------------------------
 
+type StartedRun struct {
+	ID       string   `json:"id"`
+	Entry    []string `json:"entry"`
+	Existing bool     `json:"existing"`
+}
+
+type RunResult struct {
+	ID     string       `json:"id"`
+	Runs   []StartedRun `json:"runs"`
+	Errors []string     `json:"errors"`
+}
+
+// Run roda a partir de `from` ou, sem ele, cada fluxo (grupo de blocos de início que se cruzam)
+// numa execução própria. É idempotente: fluxos que já estão rodando não são iniciados de novo
+// (`created` diz se algum foi). Usado por POST /runs e pelo ▶ do menu de mermaids.
+func (a *API) Run(from string) (RunResult, bool, error) {
+	out := RunResult{Runs: []StartedRun{}, Errors: []string{}}
+	if a.engine == nil {
+		return out, false, &diagram.OpError{Status: 503, Msg: "Execução indisponível: Docker não configurado."}
+	}
+	a.mu.Lock()
+	d := a.diagram().Clone()
+	if from != "" {
+		node, err := diagram.ResolveNode(d, from)
+		if err != nil {
+			a.mu.Unlock()
+			return out, false, err
+		}
+		from = node.ID
+	}
+	a.mu.Unlock()
+	flows := [][]string{{from}}
+	if from == "" {
+		flows = engine.Flows(d)
+	}
+	var firstErr error
+	created := false
+	for _, entry := range flows {
+		run, existing, err := a.engine.Start(d, entry)
+		if err != nil {
+			if firstErr == nil {
+				firstErr = err
+			}
+			out.Errors = append(out.Errors, err.Error())
+			continue
+		}
+		created = created || !existing
+		out.Runs = append(out.Runs, StartedRun{ID: run.ID, Entry: run.Entry, Existing: existing})
+	}
+	if len(out.Runs) == 0 {
+		if firstErr == nil {
+			firstErr = &diagram.OpError{Status: 400, Msg: "Marque um bloco de início (tecla I ou o painel do retângulo) para rodar o fluxo."}
+		}
+		return out, false, firstErr
+	}
+	out.ID = out.Runs[0].ID
+	return out, created, nil
+}
+
+// StopAll para todas as execuções rodando deste projeto (■ do menu de mermaids).
+func (a *API) StopAll() int {
+	if a.engine == nil {
+		return 0
+	}
+	var ids []string
+	a.engine.Current(func(active []*runs.Run, _ *runs.Run) {
+		for _, r := range active {
+			ids = append(ids, r.ID)
+		}
+	})
+	for _, id := range ids {
+		_ = a.engine.Stop(id)
+	}
+	return len(ids)
+}
+
+// Summary resume o projeto para a lista do menu: retângulos, blocos de início, execuções
+// rodando e a última que terminou.
+func (a *API) Summary() (nodes, starts, running int, last *runs.Summary) {
+	a.mu.Lock()
+	for _, n := range a.diagram().Nodes {
+		nodes++
+		if n.Start {
+			starts++
+		}
+	}
+	a.mu.Unlock()
+	if a.engine != nil {
+		a.engine.Current(func(active []*runs.Run, latest *runs.Run) {
+			running = len(active)
+			if latest != nil {
+				s := latest.Summary()
+				last = &s
+			}
+		})
+	}
+	return
+}
+
+// Close desconecta os navegadores deste projeto.
+func (a *API) Close() { a.Hub.Close() }
+
 // sendRun serializa sob o lock da engine e responde depois.
 func (a *API) sendRun(w http.ResponseWriter, status int, fn func(func(any))) {
 	var out []byte
@@ -712,56 +832,11 @@ func (a *API) serveRuns(w http.ResponseWriter, r *http.Request, parts []string) 
 			write(w, 400, map[string]string{"error": `"from" deve ser o id de um retângulo.`})
 			return
 		}
-		a.mu.Lock()
-		d := a.diagram().Clone()
-		if from != "" {
-			node, err := diagram.ResolveNode(d, from)
-			if err != nil {
-				a.mu.Unlock()
-				a.fail(w, err)
-				return
-			}
-			from = node.ID
-		}
-		a.mu.Unlock()
-		// Com `from`, roda só a partir dele; sem, cada fluxo (grupo de blocos de início que se cruzam)
-		// vira uma execução própria. Fluxos que já estão rodando não são iniciados de novo.
-		flows := [][]string{{from}}
-		if from == "" {
-			flows = engine.Flows(d)
-		}
-		type started struct {
-			ID       string   `json:"id"`
-			Entry    []string `json:"entry"`
-			Existing bool     `json:"existing"`
-		}
-		out := struct {
-			ID     string    `json:"id"`
-			Runs   []started `json:"runs"`
-			Errors []string  `json:"errors"`
-		}{Runs: []started{}, Errors: []string{}}
-		var firstErr error
-		created := false
-		for _, entry := range flows {
-			run, existing, err := a.engine.Start(d, entry)
-			if err != nil {
-				if firstErr == nil {
-					firstErr = err
-				}
-				out.Errors = append(out.Errors, err.Error())
-				continue
-			}
-			created = created || !existing
-			out.Runs = append(out.Runs, started{ID: run.ID, Entry: run.Entry, Existing: existing})
-		}
-		if len(out.Runs) == 0 {
-			if firstErr == nil {
-				firstErr = &diagram.OpError{Status: 400, Msg: "Marque um bloco de início (tecla I ou o painel do retângulo) para rodar o fluxo."}
-			}
-			a.fail(w, firstErr)
+		out, created, err := a.Run(from)
+		if err != nil {
+			a.fail(w, err)
 			return
 		}
-		out.ID = out.Runs[0].ID
 		status := 200
 		if created {
 			status = 201

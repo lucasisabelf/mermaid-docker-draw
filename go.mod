@@ -4,6 +4,7 @@ go 1.26
 
 require (
 	github.com/compose-spec/compose-go/v2 v2.16.1
+	golang.org/x/text v0.14.0
 	gopkg.in/yaml.v3 v3.0.1
 )
 
@@ -21,5 +22,4 @@ require (
 	go.yaml.in/yaml/v4 v4.0.0-rc.4 // indirect
 	golang.org/x/sync v0.3.0 // indirect
 	golang.org/x/sys v0.13.0 // indirect
-	golang.org/x/text v0.14.0 // indirect
 )

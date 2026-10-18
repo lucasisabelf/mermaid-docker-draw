@@ -2,6 +2,7 @@ import type { Diagram } from './model';
 import type { DiagramEvent } from './ops';
 import type { RuntimeMessage } from './runtime';
 import type { Change, Store } from './store';
+import { API } from './project';
 
 type ServerMessage =
   | { type: 'snapshot'; rev: number; diagram: Diagram | null; source: string }
@@ -32,7 +33,7 @@ export class ServerSync {
     private store: Store,
     private onRuntime: (msg: RuntimeMessage) => void = () => {},
   ) {
-    const events = new EventSource('/api/events');
+    const events = new EventSource(`${API}/events`);
     events.onmessage = (ev) => this.receive(JSON.parse(ev.data) as ServerMessage);
     // O EventSource reconecta sozinho; ao voltar, o servidor manda um snapshot novo.
     events.onerror = () => (this.online = false);
@@ -48,7 +49,7 @@ export class ServerSync {
       this.pending.clear();
       // Servidor ainda sem diagrama: ele adota o deste navegador.
       if (msg.diagram) this.store.replace(msg.diagram, 'remote');
-      else this.send('PUT', '/api/diagram.json', this.store.diagram);
+      else this.send('PUT', `${API}/diagram.json`, this.store.diagram);
       return;
     }
     if (!('rev' in msg)) return this.onRuntime(msg);
@@ -60,7 +61,7 @@ export class ServerSync {
     const { rev: _rev, source: _source, ...ev } = msg;
     // Um arraste local ainda não enviado continua valendo sobre a versão remota do retângulo.
     if (ev.type === 'node.updated') {
-      const mine = this.pending.get(`/api/nodes/${ev.node.id}`);
+      const mine = this.pending.get(`${API}/nodes/${ev.node.id}`);
       if (mine) Object.assign(ev.node, mine.patch);
     }
     this.store.applyRemote(ev as DiagramEvent);
@@ -70,7 +71,7 @@ export class ServerSync {
     if (this.resyncing) return;
     this.resyncing = true;
     try {
-      const res = await fetch('/api/diagram.json');
+      const res = await fetch(`${API}/diagram.json`);
       const { rev, diagram } = (await res.json()) as { rev: number; diagram: Diagram | null };
       this.rev = rev;
       this.pending.clear();
@@ -89,23 +90,23 @@ export class ServerSync {
     const ev = change.event;
     switch (ev.type) {
       case 'node.added':
-        return this.send('POST', '/api/nodes', ev.node);
+        return this.send('POST', `${API}/nodes`, ev.node);
       case 'node.updated':
-        return this.patch(`/api/nodes/${ev.node.id}`, change.patch ?? {});
+        return this.patch(`${API}/nodes/${ev.node.id}`, change.patch ?? {});
       case 'node.removed':
-        this.drop(`/api/nodes/${ev.id}`);
-        for (const id of ev.edges) this.drop(`/api/edges/${id}`);
-        return this.send('DELETE', `/api/nodes/${ev.id}`);
+        this.drop(`${API}/nodes/${ev.id}`);
+        for (const id of ev.edges) this.drop(`${API}/edges/${id}`);
+        return this.send('DELETE', `${API}/nodes/${ev.id}`);
       case 'edge.added':
-        return this.send('POST', '/api/edges', ev.edge);
+        return this.send('POST', `${API}/edges`, ev.edge);
       case 'edge.updated':
-        return this.patch(`/api/edges/${ev.edge.id}`, change.patch ?? {});
+        return this.patch(`${API}/edges/${ev.edge.id}`, change.patch ?? {});
       case 'edge.removed':
-        this.drop(`/api/edges/${ev.id}`);
-        return this.send('DELETE', `/api/edges/${ev.id}`);
+        this.drop(`${API}/edges/${ev.id}`);
+        return this.send('DELETE', `${API}/edges/${ev.id}`);
       case 'diagram.replaced':
         for (const path of [...this.pending.keys()]) this.drop(path);
-        return this.send('PUT', '/api/diagram.json', ev.diagram);
+        return this.send('PUT', `${API}/diagram.json`, ev.diagram);
     }
   };
 

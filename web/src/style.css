@@ -1252,3 +1252,233 @@ button.danger-solid {
   border-color: var(--danger);
   color: #fff;
 }
+
+/* ---- menu ☰ dos mermaids ---- */
+
+.brand {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  min-width: 0;
+}
+
+.brand h1 {
+  display: flex;
+  flex-direction: column;
+  line-height: 1.15;
+  min-width: 0;
+}
+
+.brand h1 #project-name {
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  max-width: 260px;
+}
+
+.brand h1 small {
+  font-size: 11px;
+  font-weight: 400;
+  color: var(--muted);
+}
+
+.menu-btn {
+  position: relative;
+  padding: 4px 10px;
+  font-size: 18px;
+  line-height: 1;
+}
+
+/* Algum mermaid rodando: um ponto no botão, mesmo com o menu fechado. */
+.menu-btn.has-running::after {
+  content: '';
+  position: absolute;
+  top: 3px;
+  right: 3px;
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: var(--run-running);
+  animation: blink 1s infinite;
+}
+
+.menu-backdrop {
+  position: fixed;
+  inset: 0;
+  background: rgb(0 0 0 / 0.25);
+  z-index: 14;
+}
+
+.menu {
+  position: fixed;
+  top: 0;
+  left: 0;
+  bottom: 0;
+  width: min(360px, 100vw);
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  padding: 14px 16px;
+  background: var(--surface);
+  border-right: 1px solid var(--border);
+  box-shadow: 8px 0 32px rgb(0 0 0 / 0.18);
+  z-index: 15;
+}
+
+.menu[hidden],
+.menu-backdrop[hidden] {
+  display: none;
+}
+
+.menu-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+
+.menu-head .panel-title {
+  margin: 0;
+}
+
+.menu-search {
+  font: inherit;
+  color: var(--text);
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 7px 10px;
+  outline: none;
+}
+
+.menu-search:focus {
+  border-color: var(--accent);
+}
+
+.menu-tools {
+  display: flex;
+  gap: 8px;
+}
+
+.menu-list {
+  flex: 1;
+  min-height: 0;
+  overflow: auto;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.menu-item {
+  display: grid;
+  grid-template-columns: 1fr auto auto;
+  gap: 4px;
+  align-items: center;
+  padding: 4px;
+  border: 1px solid transparent;
+  border-radius: 10px;
+}
+
+.menu-item.current {
+  background: var(--accent-soft);
+  border-color: var(--accent);
+}
+
+.menu-open {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 2px;
+  min-width: 0;
+  text-align: left;
+  border: none;
+  background: transparent;
+  padding: 6px 8px;
+}
+
+.menu-item:not(.current) .menu-open:hover .menu-name {
+  color: var(--accent);
+}
+
+.menu-name {
+  max-width: 100%;
+  font-weight: 600;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.menu-meta {
+  font-size: 12px;
+  color: var(--muted);
+}
+
+.menu-meta.run-running { color: var(--run-running); }
+.menu-meta.run-success { color: var(--run-success); }
+.menu-meta.run-failed { color: var(--run-failed); }
+.menu-meta.run-stopped { color: var(--run-stopped); }
+
+.menu-item.running .menu-meta {
+  animation: blink 1.4s infinite;
+}
+
+.menu-play,
+.menu-more {
+  width: 32px;
+  height: 32px;
+  padding: 0;
+  border-radius: 50%;
+}
+
+.menu-play {
+  color: #fff;
+  background: var(--start);
+  border-color: var(--start);
+  font-size: 12px;
+}
+
+.menu-play.running {
+  background: var(--run-failed);
+  border-color: var(--run-failed);
+}
+
+.menu-play:disabled {
+  background: var(--inactive);
+  border-color: var(--inactive);
+}
+
+.menu-actions {
+  grid-column: 1 / -1;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  padding: 2px 8px 6px;
+}
+
+.menu-actions button {
+  padding: 3px 10px;
+  font-size: 12px;
+}
+
+.menu-actions button.danger {
+  color: var(--danger);
+}
+
+.menu-empty {
+  padding: 10px;
+  color: var(--muted);
+  font-size: 13px;
+}
+
+.menu .hint {
+  margin: 0;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .menu-btn.has-running::after,
+  .menu-item.running .menu-meta {
+    animation: none;
+  }
+}

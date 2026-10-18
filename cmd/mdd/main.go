@@ -17,12 +17,10 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/lucasisabelf/mermaid-docker-draw/internal/api"
 	"github.com/lucasisabelf/mermaid-docker-draw/internal/docker"
 	"github.com/lucasisabelf/mermaid-docker-draw/internal/engine"
-	"github.com/lucasisabelf/mermaid-docker-draw/internal/nodespec"
-	"github.com/lucasisabelf/mermaid-docker-draw/internal/runs"
 	"github.com/lucasisabelf/mermaid-docker-draw/internal/templates"
+	"github.com/lucasisabelf/mermaid-docker-draw/internal/workspace"
 )
 
 func env(key, fallback string) string {
@@ -34,34 +32,18 @@ func env(key, fallback string) string {
 
 func main() {
 	addr := flag.String("addr", env("MDD_ADDR", ":8080"), "endereço HTTP")
-	dir := flag.String("dir", env("MDD_DIR", "."), "pasta do projeto: diagram.json, nodes/ e runs/ ficam aqui")
-	file := flag.String("file", env("MDD_FILE", "diagram.json"), "arquivo do fluxo (relativo a --dir)")
-	nodesDir := flag.String("nodes", env("MDD_NODES", "nodes"), "pasta dos .md dos retângulos (relativa a --dir)")
-	runsDir := flag.String("runs", env("MDD_RUNS", "runs"), "pasta do histórico de execuções (relativa a --dir)")
+	wsDir := flag.String("workspace", env("MDD_WORKSPACE", "workspace"), "pasta do workspace: um mermaid (projeto) por subpasta")
 	static := flag.String("static", env("MDD_STATIC", "web/dist"), "editor compilado (npm --prefix web run build)")
 	callback := flag.String("callback-url", env("MDD_CALLBACK_URL", ""), "endereço do servidor visto de dentro dos containers (padrão: http://host.docker.internal:<porta>)")
 	network := flag.String("network", env("MDD_NETWORK", ""), "rede Docker dos containers (vazio: a padrão)")
-	hostDir := flag.String("host-dir", env("MDD_HOST_DIR", ""), "caminho de --dir no host, quando o servidor roda dentro de um container")
+	hostDir := flag.String("host-dir", env("MDD_HOST_DIR", ""), "caminho de --workspace no host, quando o servidor roda dentro de um container")
 	flag.Parse()
 
-	project, err := filepath.Abs(*dir)
+	root, err := filepath.Abs(*wsDir)
 	if err != nil {
 		log.Fatal(err)
 	}
-	at := func(p string) string {
-		if filepath.IsAbs(p) {
-			return p
-		}
-		return filepath.Join(project, p)
-	}
-
-	hub := api.NewHub()
-	specs := nodespec.Store{Dir: at(*nodesDir), ProjectDir: project}
-	a, err := api.New(at(*file), specs, hub)
-	if err != nil {
-		log.Fatal(err)
-	}
-	store, err := runs.NewStore(at(*runsDir))
+	staticDir, err := filepath.Abs(*static)
 	if err != nil {
 		log.Fatal(err)
 	}
@@ -71,48 +53,54 @@ func main() {
 		log.Fatal(err)
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-	if err := dc.Ping(ctx); err != nil {
-		log.Printf("aviso: Docker indisponível (%v); o editor funciona, mas rodar o fluxo vai falhar", err)
-	} else if err := dc.RemoveLabeled(ctx, "mdd.project="+project); err != nil {
-		log.Printf("aviso: não consegui limpar containers de execuções anteriores: %v", err)
-	}
+	dockerOK := dc.Ping(ctx) == nil
 	cancel()
+	if !dockerOK {
+		log.Print("aviso: Docker indisponível; o editor funciona, mas rodar os fluxos vai falhar")
+	}
 
 	if *callback == "" {
 		_, port, _ := net.SplitHostPort(*addr)
 		*callback = "http://" + net.JoinHostPort(callbackHost(), port)
 	}
 	log.Printf("containers chamam o servidor em %s (mude com --callback-url)", *callback)
-	eng := engine.New(engine.DockerRuntime{Client: dc}, a.LoadSpec, store, func(ev map[string]any) { hub.Publish(ev) }, engine.Config{
-		Paths:       nodespec.Paths{ProjectDir: project, HostDir: *hostDir},
-		Project:     project,
+
+	cfg := workspace.Config{
+		Dir:         root,
+		HostDir:     *hostDir,
+		Runtime:     engine.DockerRuntime{Client: dc},
 		CallbackURL: *callback,
 		Network:     *network,
-	})
-	a.Attach(eng, store)
-	if _, port, err := net.SplitHostPort(*addr); err == nil {
-		a.ServerPort, _ = strconv.Atoi(port)
+		PortFree:    templates.Listenable,
 	}
-	a.PortFree = templates.Listenable
+	if dockerOK {
+		cfg.Docker = dc
+	}
+	if _, port, err := net.SplitHostPort(*addr); err == nil {
+		cfg.ServerPort, _ = strconv.Atoi(port)
+	}
+	ws, err := workspace.New(cfg)
+	if err != nil {
+		log.Fatal(err)
+	}
 
 	mux := http.NewServeMux()
-	mux.Handle("/api/", a)
-	mux.Handle("/", spa(at(*static)))
+	mux.Handle("/api/", ws)
+	mux.Handle("/", spa(staticDir))
 	srv := &http.Server{Addr: *addr, Handler: mux, ReadHeaderTimeout: 10 * time.Second}
 
 	go func() {
 		stop := make(chan os.Signal, 1)
 		signal.Notify(stop, os.Interrupt, syscall.SIGTERM)
 		<-stop
-		log.Print("parando: encerrando a execução ativa…")
-		eng.Shutdown(20 * time.Second)
-		hub.Close()
+		log.Print("parando: encerrando as execuções ativas…")
+		ws.Shutdown(20 * time.Second)
 		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 		defer cancel()
 		_ = srv.Shutdown(ctx)
 	}()
 
-	log.Printf("mermaid-docker-draw em http://localhost%s (projeto: %s)", strings.TrimPrefix(*addr, "0.0.0.0"), project)
+	log.Printf("mermaid-docker-draw em http://localhost%s (workspace: %s)", strings.TrimPrefix(*addr, "0.0.0.0"), root)
 	if err := srv.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
 		log.Fatal(err)
 	}

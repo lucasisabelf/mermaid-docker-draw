@@ -158,7 +158,7 @@ func setup(t *testing.T, nodes []string, edges []string, scripts map[string]scri
 		var out map[string]any
 		_ = json.Unmarshal(b, &out)
 		h.events <- out
-	}, Config{CallbackURL: "http://mdd:8080", StopTimeout: time.Second})
+	}, Config{APIURL: "http://mdd:8080/api/p/teste", StopTimeout: time.Second})
 	return h
 }
 
@@ -289,7 +289,7 @@ func TestEmitMidProcess(t *testing.T) {
 		t.Errorf("emitted = %v", got)
 	}
 	env := strings.Join(h.rt.env("b"), "\n")
-	if !strings.Contains(env, `MDD_PAYLOAD={"planilha_pronta":{"arquivo":"p.csv"}}`) || !strings.Contains(env, "MDD_EMIT_URL=http://mdd:8080/api/hooks/") {
+	if !strings.Contains(env, `MDD_PAYLOAD={"planilha_pronta":{"arquivo":"p.csv"}}`) || !strings.Contains(env, "MDD_EMIT_URL=http://mdd:8080/api/p/teste/hooks/") {
 		t.Errorf("env de b:\n%s", env)
 	}
 }

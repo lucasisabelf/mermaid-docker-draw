@@ -1,6 +1,7 @@
-# Sobe o editor em http://localhost:8080 com o projeto em MDD_PROJECT (padrão: o exemplo da planilha).
+# Sobe o editor em http://localhost:8080 com o workspace em MDD_WORKSPACE_DIR (padrão: examples/,
+# que já traz o exemplo da planilha). Cada subpasta do workspace é um mermaid do menu ☰.
 #   docker compose up --build
-#   MDD_PROJECT=meu-fluxo docker compose up      # caminho relativo a esta pasta
+#   MDD_WORKSPACE_DIR=meus-fluxos docker compose up      # caminho relativo a esta pasta
 services:
   mdd:
     build: .
@@ -9,10 +10,10 @@ services:
     volumes:
       # O servidor cria os containers de cada retângulo no Docker do host.
       - /var/run/docker.sock:/var/run/docker.sock
-      - ./${MDD_PROJECT:-examples/planilha}:/work
+      - ./${MDD_WORKSPACE_DIR:-examples}:/work
     environment:
-      # Volumes `./x` dos .md são relativos ao projeto; o daemon precisa do caminho no host.
-      MDD_HOST_DIR: ${PWD}/${MDD_PROJECT:-examples/planilha}
+      # Volumes `./x` dos .md são relativos ao mermaid; o daemon precisa do caminho no host.
+      MDD_HOST_DIR: ${PWD}/${MDD_WORKSPACE_DIR:-examples}
       # Os containers entram nesta rede e chamam o servidor pelo nome (para $MDD_EMIT_URL).
       MDD_NETWORK: mermaid-docker-draw
       MDD_CALLBACK_URL: http://mdd:8080

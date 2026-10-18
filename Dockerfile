@@ -17,7 +17,7 @@ RUN CGO_ENABLED=0 go build -trimpath -ldflags="-s -w" -o /mdd ./cmd/mdd
 FROM alpine:3.20
 COPY --from=server /mdd /usr/local/bin/mdd
 COPY --from=web /web/dist /app/web
-ENV MDD_STATIC=/app/web MDD_DIR=/work
+ENV MDD_STATIC=/app/web MDD_WORKSPACE=/work
 WORKDIR /work
 EXPOSE 8080
 ENTRYPOINT ["mdd"]

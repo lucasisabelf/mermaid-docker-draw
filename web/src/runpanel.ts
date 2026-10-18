@@ -97,7 +97,7 @@ export class RunPanel {
    */
   private pending = new Set<string>();
 
-  private async sure(key: string, title: string, detail: string, confirmLabel: string, danger = false) {
+  async sure(key: string, title: string, detail: string, confirmLabel: string, danger = false) {
     if (this.pending.has(key)) return false;
     this.pending.add(key);
     try {

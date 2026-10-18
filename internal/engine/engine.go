@@ -132,8 +132,9 @@ type Config struct {
 	Paths nodespec.Paths
 	// Rótulo `mdd.project` dos containers e volumes: a limpeza ao iniciar só mexe nos deste projeto.
 	Project string
-	// Endereço do servidor visto de dentro dos containers (para $MDD_EMIT_URL).
-	CallbackURL string
+	// Base da API deste projeto vista de dentro dos containers, ex.: http://mdd:8080/api/p/planilha.
+	// $MDD_EMIT_URL é <APIURL>/hooks/<token>.
+	APIURL string
 	// Rede Docker onde os containers entram; vazio usa a padrão e host.docker.internal.
 	Network     string
 	StopTimeout time.Duration
@@ -433,7 +434,7 @@ func (e *Engine) runNode(r *run, id string, attempt int, tok string, payload []b
 		"MDD_RUN_ID="+r.st.ID,
 		"MDD_NODE_ID="+id,
 		"MDD_SHARED="+nodespec.SharedDir,
-		"MDD_EMIT_URL="+strings.TrimRight(e.cfg.CallbackURL, "/")+"/api/hooks/"+tok,
+		"MDD_EMIT_URL="+strings.TrimRight(e.cfg.APIURL, "/")+"/hooks/"+tok,
 	)
 	if payload != nil {
 		cs.Env = append(cs.Env, "MDD_PAYLOAD="+string(payload))

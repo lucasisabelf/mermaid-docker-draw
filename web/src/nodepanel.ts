@@ -2,6 +2,7 @@ import { parseDocument, type Document } from 'yaml';
 import { api, type Runtime } from './runtime';
 import { toast } from './runpanel';
 import type { Store } from './store';
+import { API } from './project';
 
 /**
  * Painel do retângulo selecionado: o `.md` do container (nodes/<id>.md), com uma descrição livre e
@@ -14,7 +15,7 @@ type Tab = 'simple' | 'code' | 'files';
 
 /** Conteúdo cru de um arquivo (o `api` interpretaria um arquivo .json). */
 async function readFile(id: string, name: string) {
-  const res = await fetch(`/api/nodes/${encodeURIComponent(id)}/files/${encodeURIComponent(name)}`);
+  const res = await fetch(`${API}/nodes/${encodeURIComponent(id)}/files/${encodeURIComponent(name)}`);
   if (!res.ok) throw new Error(`${name}: ${res.status}`);
   return res.text();
 }
@@ -221,7 +222,7 @@ export class NodePanel {
     this.renderHeader();
     this.setStatus('carregando…');
     try {
-      const spec = await api<{ markdown: string; error?: string }>('GET', `/api/nodes/${encodeURIComponent(id)}/spec`);
+      const spec = await api<{ markdown: string; error?: string }>('GET', `${API}/nodes/${encodeURIComponent(id)}/spec`);
       if (this.id !== id) return;
       this.saved = this.markdown = spec.markdown;
       this.render();
@@ -300,7 +301,7 @@ export class NodePanel {
     const md = this.markdown;
     if (!id || md === this.saved) return;
     try {
-      await api('PUT', `/api/nodes/${encodeURIComponent(id)}/spec`, md);
+      await api('PUT', `${API}/nodes/${encodeURIComponent(id)}/spec`, md);
       this.saved = md;
       if (this.id === id) this.setStatus('salvo');
     } catch (err) {
@@ -316,7 +317,7 @@ export class NodePanel {
     if (!id) return;
     let list: { name: string; size: number }[];
     try {
-      list = await api('GET', `/api/nodes/${encodeURIComponent(id)}/files`);
+      list = await api('GET', `${API}/nodes/${encodeURIComponent(id)}/files`);
     } catch (err) {
       return this.setStatus((err as Error).message, true);
     }
@@ -364,7 +365,7 @@ export class NodePanel {
     const { name, text } = this.file;
     if (!id || !name || text === this.file.saved) return;
     try {
-      await api('PUT', `/api/nodes/${encodeURIComponent(id)}/files/${encodeURIComponent(name)}`, text);
+      await api('PUT', `${API}/nodes/${encodeURIComponent(id)}/files/${encodeURIComponent(name)}`, text);
       if (this.id === id && this.file.name === name) this.file.saved = text;
       if (this.id === id) this.setStatus(`salvo · nodes/${id}/${name}`);
     } catch (err) {
@@ -377,7 +378,7 @@ export class NodePanel {
     const name = prompt('Nome do arquivo (ex.: requirements.txt, util.py):')?.trim();
     if (!id || !name) return;
     try {
-      await api('PUT', `/api/nodes/${encodeURIComponent(id)}/files/${encodeURIComponent(name)}`, '');
+      await api('PUT', `${API}/nodes/${encodeURIComponent(id)}/files/${encodeURIComponent(name)}`, '');
       this.file = { name, saved: '', text: '' };
       await this.loadFiles(true);
     } catch (err) {
@@ -390,7 +391,7 @@ export class NodePanel {
     const { name } = this.file;
     if (!id || !name || !confirm(`Apagar ${name}?`)) return;
     try {
-      await api('DELETE', `/api/nodes/${encodeURIComponent(id)}/files/${encodeURIComponent(name)}`);
+      await api('DELETE', `${API}/nodes/${encodeURIComponent(id)}/files/${encodeURIComponent(name)}`);
       this.file = { name: '', saved: '', text: '' };
       await this.loadFiles(false);
     } catch (err) {

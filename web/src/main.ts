@@ -4,13 +4,16 @@ import { Canvas, DND_TYPE } from './canvas';
 import { downloadPng, downloadSvg } from './export';
 import { parseMermaid, toMermaid, type Diagram } from './model';
 import { EdgePanel } from './edgepanel';
+import { ProjectMenu } from './menu';
 import { NodePanel } from './nodepanel';
 import { RunPanel, toast } from './runpanel';
 import { api, Runtime, type Template } from './runtime';
 import { Store } from './store';
 import { ServerSync } from './sync';
+import { API, PROJECT } from './project';
 
-const STORAGE_KEY = 'mermaid-docker-draw:code';
+// Cópia local do código, por mermaid.
+const STORAGE_KEY = `mermaid-docker-draw:code:${PROJECT}`;
 
 // O texto da seta é o evento que dispara o próximo: vazio = terminou com sucesso.
 const SAMPLE = `flowchart LR
@@ -45,6 +48,7 @@ const canvas = new Canvas($('#canvas'), store, runtime);
 const runPanel = new RunPanel(store, runtime);
 new NodePanel($('#node-panel'), store, runtime);
 new EdgePanel($('#edge-panel'), store, runtime);
+new ProjectMenu(runPanel);
 canvas.onPlay = (id) => runPanel.play(id);
 canvas.onTemplate = (name, at) => void fromTemplate(name, at.x, at.y);
 
@@ -60,7 +64,7 @@ store.subscribe(() => {
 
 async function fromTemplate(name: string, x: number, y: number) {
   try {
-    const { node } = await api<{ node: { id: string } }>('POST', `/api/templates/${name}`, { x: Math.round(x), y: Math.round(y) });
+    const { node } = await api<{ node: { id: string } }>('POST', `${API}/templates/${name}`, { x: Math.round(x), y: Math.round(y) });
     if (store.node(node.id)) store.select({ kind: 'node', id: node.id });
     else selectWhenArrives = node.id;
   } catch (err) {
@@ -134,7 +138,7 @@ function updateHint() {
   document.querySelector('[data-tool="arrow"]')!.classList.toggle('active', store.mode === 'arrow');
 }
 
-// ---- sincronização com o servidor (API em server/api.ts) -------------------
+// ---- sincronização com o servidor (API do mermaid aberto, em Go) ----------
 
 new ServerSync(store, (msg) => runtime.receive(msg));
 

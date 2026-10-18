@@ -106,34 +106,46 @@ func (t Template) Instantiate(store nodespec.Store, id, title string, hostPort i
 // FirstPort é a primeira porta do host oferecida aos templates.
 const FirstPort = 8081
 
-// NextPort escolhe a primeira porta do host livre a partir de FirstPort: nenhuma outra caixa do
-// projeto a publica, não está em `skip` (ex.: a do próprio servidor) e `free` diz que ninguém a usa.
-func NextPort(store nodespec.Store, free func(int) bool, skip ...int) int {
+// NextPort escolhe a primeira porta do host livre a partir de FirstPort: nenhum retângulo dos
+// projetos em `stores` a publica (todos os mermaids do workspace, para não conflitarem entre si),
+// não está em `skip` (ex.: a do próprio servidor) e `free` diz que ninguém a usa agora.
+func NextPort(stores []nodespec.Store, free func(int) bool, skip ...int) int {
 	used := map[int]bool{}
 	for _, p := range skip {
 		used[p] = true
 	}
-	entries, _ := os.ReadDir(store.Dir)
-	for _, e := range entries {
-		id, ok := strings.CutSuffix(e.Name(), ".md")
-		if !ok || e.IsDir() {
-			continue
-		}
-		spec, err := store.Load(id, id)
-		if err != nil {
-			continue
-		}
-		for _, p := range spec.Service.Ports {
-			if n, err := strconv.Atoi(p.Published); err == nil {
-				used[n] = true
-			}
-		}
+	for _, p := range PublishedPorts(stores...) {
+		used[p] = true
 	}
 	port := FirstPort
 	for used[port] || (free != nil && !free(port)) {
 		port++
 	}
 	return port
+}
+
+// PublishedPorts lista as portas do host publicadas pelos `.md` dos projetos.
+func PublishedPorts(stores ...nodespec.Store) []int {
+	var out []int
+	for _, store := range stores {
+		entries, _ := os.ReadDir(store.Dir)
+		for _, e := range entries {
+			id, ok := strings.CutSuffix(e.Name(), ".md")
+			if !ok || e.IsDir() {
+				continue
+			}
+			spec, err := store.Load(id, id)
+			if err != nil {
+				continue
+			}
+			for _, p := range spec.Service.Ports {
+				if n, err := strconv.Atoi(p.Published); err == nil {
+					out = append(out, n)
+				}
+			}
+		}
+	}
+	return out
 }
 
 // Listenable diz se dá para escutar na porta agora (outro programa ou container não a ocupa).

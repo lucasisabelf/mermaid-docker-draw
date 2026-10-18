@@ -1,3 +1,5 @@
+import { API } from './project';
+
 /**
  * Estado das execuções no navegador: chega pelo mesmo /api/events do diagrama (eventos `run.*`,
  * sem `rev`, porque rodar não muda o desenho). Fica separado do Store de propósito.
@@ -240,30 +242,30 @@ export class Runtime {
 
   /** Mostra uma execução antiga; `null` volta a mostrar as atuais. */
   async show(id: string | null) {
-    this.pinned = id === null ? null : (this.runs.get(id) ?? (await api<Run>('GET', `/api/runs/${id}`)));
+    this.pinned = id === null ? null : (this.runs.get(id) ?? (await api<Run>('GET', `${API}/runs/${id}`)));
     this.emit({ kind: 'run' });
   }
 
   /** Roda a partir de `from` ou, sem ele, cada fluxo dos blocos de início (o servidor é idempotente). */
   start(from?: string) {
-    return api<StartResult>('POST', '/api/runs', from ? { from } : {});
+    return api<StartResult>('POST', `${API}/runs`, from ? { from } : {});
   }
 
   /** Para uma execução ou, sem id, todas as que estão rodando. */
   async stop(runId?: string) {
     const ids = runId ? [runId] : [...this.activeIds];
-    await Promise.all(ids.map((id) => api('POST', `/api/runs/${id}/stop`)));
+    await Promise.all(ids.map((id) => api('POST', `${API}/runs/${id}/stop`)));
   }
 
   restart(runId: string, node: string) {
-    return api('POST', `/api/runs/${runId}/nodes/${encodeURIComponent(node)}/restart`);
+    return api('POST', `${API}/runs/${runId}/nodes/${encodeURIComponent(node)}/restart`);
   }
 
   logs(run: string, node: string, after = 0) {
-    return api<LogLine[]>('GET', `/api/runs/${run}/nodes/${encodeURIComponent(node)}/logs?after=${after}`);
+    return api<LogLine[]>('GET', `${API}/runs/${run}/nodes/${encodeURIComponent(node)}/logs?after=${after}`);
   }
 
   history() {
-    return api<RunSummary[]>('GET', '/api/runs');
+    return api<RunSummary[]>('GET', `${API}/runs`);
   }
 }

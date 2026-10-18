@@ -7,7 +7,10 @@
   </head>
   <body>
     <header class="topbar">
-      <h1>mermaid-docker-draw</h1>
+      <div class="brand">
+        <button id="btn-menu" type="button" class="menu-btn" aria-label="Mermaids" aria-controls="menu">☰</button>
+        <h1><span id="project-name"></span><small>mermaid-docker-draw</small></h1>
+      </div>
       <div class="run-controls">
         <button id="btn-run" class="primary" type="button">▶ Rodar</button>
         <button id="btn-stop" type="button" title="Para todos os containers da execução">■ Parar</button>
@@ -139,6 +142,21 @@
         </div>
       </aside>
     </main>
+    <div id="menu-backdrop" class="menu-backdrop" hidden></div>
+    <aside id="menu" class="menu" hidden aria-label="Mermaids">
+      <div class="menu-head">
+        <div class="panel-title">Mermaids</div>
+        <button id="menu-close" type="button" class="icon" title="Fechar (Esc)">✕</button>
+      </div>
+      <input id="menu-search" class="menu-search" type="search" placeholder="Buscar mermaid…" spellcheck="false" />
+      <div class="menu-tools">
+        <button id="menu-new" type="button" class="primary">+ Novo</button>
+        <button id="menu-import" type="button" title="Importa um .zip exportado por este menu">Importar .zip</button>
+        <input id="menu-file" type="file" accept=".zip,application/zip" hidden />
+      </div>
+      <ul id="menu-list" class="menu-list"></ul>
+      <p class="hint">▶ roda todos os blocos de início do mermaid sem abri-lo; mermaids diferentes rodam ao mesmo tempo.</p>
+    </aside>
     <script type="module" src="/src/main.ts"></script>
   </body>
 </html>

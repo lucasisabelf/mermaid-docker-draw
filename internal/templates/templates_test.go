@@ -14,7 +14,7 @@ func TestInstantiate(t *testing.T) {
 	ports := map[int]bool{}
 	for i, tpl := range All {
 		id := tpl.Prefix + string(rune('1'+i))
-		port := NextPort(store, nil, 8080)
+		port := NextPort([]nodespec.Store{store}, nil, 8080)
 		if ports[port] {
 			t.Fatalf("%s: porta %d repetida", tpl.Name, port)
 		}
@@ -45,7 +45,7 @@ func TestInstantiate(t *testing.T) {
 		t.Errorf("portas = %v", ports)
 	}
 	// Porta ocupada por outro programa é pulada.
-	if got := NextPort(store, func(p int) bool { return p != 8086 }, 8080); got != 8087 {
+	if got := NextPort([]nodespec.Store{store}, func(p int) bool { return p != 8086 }, 8080); got != 8087 {
 		t.Errorf("porta ocupada: %d", got)
 	}
 }
