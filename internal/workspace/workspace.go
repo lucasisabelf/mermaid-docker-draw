@@ -434,6 +434,15 @@ func (m *Manager) Delete(slug string) error {
 	if p != nil && p.engine != nil {
 		p.engine.Shutdown(30 * time.Second)
 	}
+	// A rede onde os retângulos se achavam pelo id vai junto (os volumes de dados ficam, para dar
+	// para recuperar o mermaid da lixeira).
+	if m.cfg.Runtime != nil {
+		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		if err := m.cfg.Runtime.RemoveNetwork(ctx, engine.NetworkName(m.dir(slug))); err != nil {
+			log.Printf("aviso (%s): não consegui apagar a rede do mermaid: %v", slug, err)
+		}
+		cancel()
+	}
 
 	m.mu.Lock()
 	m.close(slug)
@@ -538,7 +547,8 @@ func (m *Manager) reassignPorts(dir string) error {
 			for t := range taken {
 				skip = append(skip, t)
 			}
-			next := templates.NextPort(others, m.cfg.PortFree, skip...)
+			// A partir da própria porta: um banco continua na faixa dele (15432…, 27117…).
+			next := templates.NextPort(others, m.cfg.PortFree, old, skip...)
 			taken[next] = true
 			md = replacePort(md, old, next)
 		}

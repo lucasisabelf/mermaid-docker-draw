@@ -140,7 +140,15 @@ func Parse(id, markdown, projectDir string) (*Spec, error) {
 }
 
 // RuntimeVars são as variáveis que a engine passa a cada container.
-var RuntimeVars = []string{"MDD_RUN_ID", "MDD_NODE_ID", "MDD_SHARED", "MDD_EMIT_URL", "MDD_PAYLOAD"}
+var RuntimeVars = []string{"MDD_RUN_ID", "MDD_NODE_ID", "MDD_HOST", "MDD_SHARED", "MDD_EMIT_URL", "MDD_PAYLOAD"}
+
+var slugChars = regexp.MustCompile(`[^a-z0-9_.-]+`)
+
+// ProjectSlug é o nome do mermaid (a pasta) só com caracteres que valem num nome de volume ou de
+// rede do Docker: "Minha Loja" → "minha-loja".
+func ProjectSlug(projectDir string) string {
+	return strings.Trim(slugChars.ReplaceAllString(strings.ToLower(filepath.Base(projectDir)), "-"), "-.")
+}
 
 // interpolationEnv: como no compose, `${VAR}` no yaml vem do ambiente do servidor (e `$$` vira `$`).
 // As variáveis da execução só existem dentro do container, então continuam literais para o shell de lá.

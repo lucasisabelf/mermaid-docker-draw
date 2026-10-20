@@ -168,6 +168,31 @@ func (c *Client) RemoveVolume(ctx context.Context, name string) error {
 	return err
 }
 
+// ---- redes -------------------------------------------------------------------
+
+// EnsureNetwork cria a rede (bridge) se ela ainda não existe.
+func (c *Client) EnsureNetwork(ctx context.Context, name string, labels map[string]string) error {
+	err := c.call(ctx, http.MethodGet, "/networks/"+url.PathEscape(name), nil, nil)
+	if err == nil || !IsNotFound(err) {
+		return err
+	}
+	err = c.call(ctx, http.MethodPost, "/networks/create", map[string]any{"Name": name, "Driver": "bridge", "Labels": labels}, nil)
+	// Duas execuções criando ao mesmo tempo: a outra ganhou, e a rede já existe.
+	if err != nil && strings.Contains(err.Error(), "already exists") {
+		return nil
+	}
+	return err
+}
+
+// RemoveNetwork apaga a rede (sem erro se ela não existe).
+func (c *Client) RemoveNetwork(ctx context.Context, name string) error {
+	err := c.call(ctx, http.MethodDelete, "/networks/"+url.PathEscape(name), nil, nil)
+	if IsNotFound(err) {
+		return nil
+	}
+	return err
+}
+
 // ---- containers ------------------------------------------------------------
 
 type Mount struct {
@@ -175,6 +200,12 @@ type Mount struct {
 	Source   string `json:"Source,omitempty"`
 	Target   string `json:"Target"`
 	ReadOnly bool   `json:"ReadOnly,omitempty"`
+}
+
+// NetworkAttach é uma rede onde o container entra, com os nomes (aliases) pelos quais é achado nela.
+type NetworkAttach struct {
+	Name    string
+	Aliases []string
 }
 
 type Port struct {
@@ -198,6 +229,9 @@ type ContainerSpec struct {
 	Ports       []Port
 	ExtraHosts  []string
 	NetworkMode string
+	// Networks: a primeira entra no create (vira o NetworkMode) e as outras com connect, antes do
+	// start. Só vale sem NetworkMode.
+	Networks []NetworkAttach
 	Privileged  bool
 	CapAdd      []string
 	Tmpfs       []string
@@ -236,6 +270,12 @@ func (s ContainerSpec) body() map[string]any {
 	if s.NetworkMode != "" {
 		host["NetworkMode"] = s.NetworkMode
 	}
+	var networking map[string]any
+	if s.NetworkMode == "" && len(s.Networks) > 0 {
+		first := s.Networks[0]
+		host["NetworkMode"] = first.Name
+		networking = map[string]any{"EndpointsConfig": map[string]any{first.Name: map[string]any{"Aliases": first.Aliases}}}
+	}
 	b := map[string]any{
 		"Image":        s.Image,
 		"Env":          s.Env,
@@ -255,7 +295,18 @@ func (s ContainerSpec) body() map[string]any {
 	if s.StopTimeout != nil {
 		b["StopTimeout"] = *s.StopTimeout
 	}
+	if networking != nil {
+		b["NetworkingConfig"] = networking
+	}
 	return b
+}
+
+// extraNetworks são as redes além da primeira, conectadas depois do create.
+func (s ContainerSpec) extraNetworks() []NetworkAttach {
+	if s.NetworkMode != "" || len(s.Networks) < 2 {
+		return nil
+	}
+	return s.Networks[1:]
 }
 
 // Line é uma linha da saída de um container.
@@ -285,6 +336,13 @@ func (c *Client) Run(ctx context.Context, spec ContainerSpec) (*Container, error
 		return nil, err
 	}
 	ct := &Container{c: c, ID: created.Id, lines: make(chan Line, 256), done: make(chan struct{})}
+	for _, n := range spec.extraNetworks() {
+		body := map[string]any{"Container": ct.ID, "EndpointConfig": map[string]any{"Aliases": n.Aliases}}
+		if err := c.call(ctx, http.MethodPost, "/networks/"+url.PathEscape(n.Name)+"/connect", body, nil); err != nil {
+			_ = ct.Remove()
+			return nil, fmt.Errorf("rede %s: %w", n.Name, err)
+		}
+	}
 	if err := c.call(ctx, http.MethodPost, "/containers/"+ct.ID+"/start", nil, nil); err != nil {
 		_ = ct.Remove()
 		return nil, err

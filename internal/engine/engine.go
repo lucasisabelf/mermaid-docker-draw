@@ -111,6 +111,8 @@ type Runtime interface {
 	EnsureImage(ctx context.Context, image string, progress func(string)) error
 	CreateVolume(ctx context.Context, name string, labels map[string]string) error
 	RemoveVolume(ctx context.Context, name string) error
+	EnsureNetwork(ctx context.Context, name string, labels map[string]string) error
+	RemoveNetwork(ctx context.Context, name string) error
 	Run(ctx context.Context, spec docker.ContainerSpec) (Process, error)
 }
 
@@ -135,7 +137,8 @@ type Config struct {
 	// Base da API deste projeto vista de dentro dos containers, ex.: http://mdd:8080/api/p/planilha.
 	// $MDD_EMIT_URL é <APIURL>/hooks/<token>.
 	APIURL string
-	// Rede Docker onde os containers entram; vazio usa a padrão e host.docker.internal.
+	// Rede do servidor (modo compose): os containers também entram nela, para o callback. Vazio:
+	// o servidor está no host, e os containers o acham por host.docker.internal.
 	Network     string
 	StopTimeout time.Duration
 }
@@ -359,6 +362,14 @@ func (e *Engine) Start(d *diagram.Diagram, entry []string) (st *runs.Run, existi
 		e.mu.Unlock()
 		return nil, false, opErr(500, "Não foi possível criar o volume compartilhado: %v", err)
 	}
+	// A rede do mermaid é de todas as execuções dele: um app acha o banco que subiu em outra.
+	if err := e.rt.EnsureNetwork(context.Background(), e.NetworkName(), map[string]string{"mdd": "1", "mdd.project": e.cfg.Project}); err != nil {
+		e.mu.Lock()
+		delete(e.active, r.st.ID)
+		e.mu.Unlock()
+		go e.rt.RemoveVolume(context.Background(), r.volume)
+		return nil, false, opErr(500, "Não foi possível criar a rede do mermaid: %v", err)
+	}
 
 	e.mu.Lock()
 	defer e.mu.Unlock()
@@ -433,6 +444,7 @@ func (e *Engine) runNode(r *run, id string, attempt int, tok string, payload []b
 	cs.Env = append(cs.Env,
 		"MDD_RUN_ID="+r.st.ID,
 		"MDD_NODE_ID="+id,
+		"MDD_HOST="+id,
 		"MDD_SHARED="+nodespec.SharedDir,
 		"MDD_EMIT_URL="+strings.TrimRight(e.cfg.APIURL, "/")+"/hooks/"+tok,
 	)
@@ -440,10 +452,15 @@ func (e *Engine) runNode(r *run, id string, attempt int, tok string, payload []b
 		cs.Env = append(cs.Env, "MDD_PAYLOAD="+string(payload))
 	}
 	cs.Mounts = append(cs.Mounts, docker.Mount{Type: "volume", Source: r.volume, Target: nodespec.SharedDir})
-	if cs.NetworkMode == "" && e.cfg.Network != "" {
-		cs.NetworkMode = e.cfg.Network
-	} else if cs.NetworkMode == "" {
-		cs.ExtraHosts = append(cs.ExtraHosts, "host.docker.internal:host-gateway")
+	// Na rede do mermaid, cada retângulo é achado pelo id (postgres://…@pg1:5432). network_mode no
+	// yaml (ex.: host) vale sozinho.
+	if cs.NetworkMode == "" {
+		cs.Networks = []docker.NetworkAttach{{Name: e.NetworkName(), Aliases: []string{id}}}
+		if e.cfg.Network != "" {
+			cs.Networks = append(cs.Networks, docker.NetworkAttach{Name: e.cfg.Network})
+		} else {
+			cs.ExtraHosts = append(cs.ExtraHosts, "host.docker.internal:host-gateway")
+		}
 	}
 
 	e.mu.Lock()
@@ -788,6 +805,54 @@ func (e *Engine) Current(fn func(active []*runs.Run, latest *runs.Run)) {
 		}
 	}
 	fn(list, latest)
+}
+
+// NetworkName é a rede Docker do mermaid, onde os retângulos se acham pelo id.
+func (e *Engine) NetworkName() string {
+	return NetworkName(e.cfg.Project)
+}
+
+// NetworkName é a rede do mermaid na pasta `projectDir`.
+func NetworkName(projectDir string) string {
+	slug := nodespec.ProjectSlug(projectDir)
+	if slug == "" {
+		slug = "padrao"
+	}
+	return "mdd-net-" + slug
+}
+
+// NodeActive diz se o retângulo está numa execução rodando e ainda não terminou (esperando,
+// subindo ou rodando).
+func (e *Engine) NodeActive(id string) bool {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	return e.nodeActive(id)
+}
+
+func (e *Engine) nodeActive(id string) bool {
+	for _, r := range e.active {
+		if n := r.st.Nodes[id]; n != nil && slices.Contains([]string{runs.StatusPending, runs.StatusStarting, runs.StatusRunning}, n.Status) {
+			return true
+		}
+	}
+	return false
+}
+
+// ResetVolumes apaga os volumes `names` do retângulo (os dados de um banco, o venv…), que voltam
+// vazios na próxima execução. Recusa (409) se ele estiver rodando.
+func (e *Engine) ResetVolumes(id string, names []string) error {
+	e.mu.Lock()
+	active := e.nodeActive(id)
+	e.mu.Unlock()
+	if active {
+		return opErr(409, "O retângulo %s está rodando: pare a execução antes de zerar os dados.", id)
+	}
+	for _, name := range names {
+		if err := e.rt.RemoveVolume(context.Background(), name); err != nil {
+			return opErr(500, "Não consegui apagar o volume %s: %v", name, err)
+		}
+	}
+	return nil
 }
 
 // Running diz se a execução está rodando.

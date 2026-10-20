@@ -126,6 +126,12 @@ A paleta tem retângulos que já nascem configurados. Arraste um para o canvas o
 | 🐍 Python · job | `python:3.12-slim` | o mesmo, para um script que processa e termina | job |
 | 🐹 Go · serviço | `golang:1.26-alpine` | usa o `go.mod` da pasta (ou cria um), compila o pacote main e roda | serviço |
 | 🐹 Go · job | `golang:1.26-alpine` | o mesmo, para um programa que processa e termina | job |
+| 🐘 Postgres | `postgres:18-alpine` | banco com migrations e seeds (veja [Bancos de dados](#bancos-de-dados)) | serviço |
+| 🍃 MongoDB | `mongo:8` | idem, com scripts do mongosh | serviço |
+| 🟥 Redis | `redis:8-alpine` | idem, com comandos do redis-cli; persistência AOF | serviço |
+| 🛠️ pgAdmin · 🧭 mongo-express · 🔬 RedisInsight | imagens oficiais | telas de admin que abrem já conectadas ao banco da seta `pronto` | serviço |
+
+Na paleta, os templates ficam agrupados em **Apps**, **Bancos de dados** e **Admin dos bancos**.
 
 Cada template cria:
 - o `nodes/<id>.md` com o yaml pronto;
@@ -160,19 +166,68 @@ Na aba **Arquivos**, **Enviar .zip** (ou arrastar e soltar o arquivo na aba) põ
 
 **Cache entre execuções:**
 - Os caches de pacotes ficam em volumes nomeados e compartilhados: `mdd-npm-cache`, `mdd-pip-cache`, `mdd-go-mod` e `mdd-go-build`.
-- O `node_modules` (React) e o venv (Python) ficam num volume do próprio retângulo, `mdd-node-<mermaid>-<id>`. Assim não sujam a pasta, e as dependências só são reinstaladas quando o `package.json`, o lockfile, o `requirements.txt` ou o `pyproject.toml` mudam. Duplicar ou importar um mermaid dá um volume novo para cada retângulo.
+- O `node_modules` (React) e o venv (Python) ficam num volume do próprio retângulo, `mdd-node-<mermaid>-<id>`. Assim não sujam a pasta, e as dependências só são reinstaladas quando o `package.json`, o lockfile, o `requirements.txt` ou o `pyproject.toml` mudam. Duplicar ou importar um mermaid dá volumes novos para cada retângulo, inclusive os de dados dos bancos.
 
 **Fora do escopo por enquanto:**
 - `Dockerfile` próprio: `build:` no yaml continua não suportado.
 - Vários serviços num zip só: cada retângulo é um serviço.
 
-O exemplo [`examples/projetos-via-zip-exemplo`](examples/projetos-via-zip-exemplo) tem quatro retângulos, todos enviados como `.zip`:
-- o CRUD de pedidos em FastAPI + SQLite;
-- o CRUD de estoque em Go com chi, gravado num arquivo JSON;
-- o painel React que faz o CRUD das duas e sobe quando ambas estão `pronto`;
+O exemplo [`examples/projetos-via-zip-exemplo`](examples/projetos-via-zip-exemplo) é uma loja inteira, com cada parte enviada como `.zip`:
+- o CRUD de pedidos em FastAPI, sobre **Postgres** com cache no **Redis**;
+- o CRUD de estoque em Go com chi, sobre **MongoDB**;
+- os três bancos com as próprias migrations e seeds, e o pgAdmin, o mongo-express e o RedisInsight ligados a eles;
+- o painel React que faz o CRUD das duas APIs e sobe quando ambas estão `pronto`;
 - o mesmo painel em modo dev.
 
-Os dados das APIs ficam em volumes do próprio retângulo (`mdd-node-<mermaid>-<id>-dados`, em `/data`), então sobrevivem entre execuções.
+```mermaid
+flowchart LR
+    pg1("Postgres") -->|pronto| py1("API de pedidos")
+    redis1("Redis") -->|pronto| py1
+    mongo1("MongoDB") -->|pronto| go1("API de estoque")
+    py1 -->|pronto| react1("Painel React")
+    go1 -->|pronto| react1
+    pg1 -->|pronto| pgadmin1("pgAdmin")
+    redis1 -->|pronto| ri1("RedisInsight")
+    mongo1 -->|pronto| me1("mongo-express")
+```
+
+## Bancos de dados
+
+Os templates **Postgres**, **MongoDB** e **Redis** são retângulos como os outros (um serviço do fluxo), com três diferenças.
+
+**Os dados ficam.** Eles moram no volume do retângulo, `mdd-node-<mermaid>-<id>-dados`. O banco para quando a execução acaba, mas os dados continuam lá na próxima. **Zerar dados**, no painel do retângulo, apaga esse volume (com confirmação, e só com ele parado). Na execução seguinte o banco começa vazio, e as migrations e os seeds rodam de novo.
+
+**Nome na rede.** Cada mermaid tem uma rede Docker (`mdd-net-<mermaid>`), e cada retângulo entra nela com o **id como nome**. Um app acha o banco por `pg1:5432`, `mongo1:27017` ou `redis1:6379`. O `.md` do banco mostra as duas conexões, de dentro e do seu computador:
+
+| Banco | De outro retângulo | Do seu computador |
+|---|---|---|
+| Postgres | `postgres://app:app@pg1:5432/app` | `localhost:15432` (a faixa começa em 15432) |
+| MongoDB | `mongodb://app:app@mongo1:27017/app?authSource=admin` | `localhost:27117` |
+| Redis | `redis://:app@redis1:6379/0` | `localhost:16379` |
+
+**Migrations e seeds na pasta do retângulo.** Elas são editáveis na aba Arquivos ou enviadas por `.zip`:
+
+```
+nodes/pg1/
+  run.sh
+  migrations/0001_cria_pedidos.sql     *.sql (Postgres) · *.js (mongosh) · *.redis (comandos do redis-cli)
+  migrations/0002_indices.sql
+  seeds/0001_exemplo.sql
+```
+
+Ao subir, o `run.sh` do banco espera o servidor responder. Depois aplica, em ordem de nome, só os arquivos que ainda não rodaram:
+- **Controle:** cada arquivo aplicado fica registrado com o md5 em `mdd_migrations`/`mdd_seeds` (tabela, coleção ou hash, conforme o banco).
+- **Atômico:** no Postgres, cada migration roda numa transação junto com o registro; no Redis, num `MULTI`/`EXEC`. Uma migration que falha não deixa nada aplicado, e o retângulo termina como **falha**, disparando a seta `falha`.
+- **Não se edita o que já foi aplicado:** uma migration alterada depois de aplicada faz o retângulo falhar com a mensagem certa. Crie uma nova (`0003_…`) ou zere os dados.
+- **Seeds:** rodam depois das migrations, uma vez cada. Se um seed mudar, a mudança só gera um aviso.
+
+No fim, ele emite:
+- `::mdd emit migrado {"aplicadas": [...]}`;
+- `::mdd emit pronto {"url": "postgres://…@pg1:5432/app", "host": "pg1", ...}`.
+
+Uma seta `pronto` do banco até a sua API garante que ela só sobe com o esquema pronto. A conexão também chega a ela em `$MDD_PAYLOAD`.
+
+**Telas de admin.** Ligue o banco ao **pgAdmin**, ao **mongo-express** ou ao **RedisInsight** com uma seta `pronto`. O `run.sh` deles lê a conexão do payload, e eles abrem conectados e sem login. Na primeira subida, o pgAdmin leva cerca de um minuto e meio.
 
 ## Gatilhos (o texto da seta)
 
@@ -208,6 +263,7 @@ wget -qO- --post-data='{"arquivo":"p.csv"}' "$MDD_EMIT_URL/planilha_pronta"   # 
 | `MDD_PAYLOAD` | os payloads dos eventos que dispararam este retângulo, `{"planilha_pronta": {...}}` |
 | `MDD_EMIT_URL` | o endereço para emitir eventos por HTTP (`POST $MDD_EMIT_URL/<evento>`) |
 | `MDD_RUN_ID`, `MDD_NODE_ID` | a execução e o retângulo |
+| `MDD_HOST` | o nome do retângulo na rede do mermaid (o id): é por ele que os outros o acham |
 
 ## Na interface
 
@@ -273,6 +329,7 @@ curl -X PUT --data-binary @main.py $P/nodes/py1/files/main.py
 curl $P/nodes/py1/files/src/util.py            # caminho com subpasta (?download baixa)
 curl -X POST --data-binary @app.zip "$P/nodes/py1/files.zip?mode=replace"   # ou mode=merge
 curl -o py1.zip $P/nodes/py1/files.zip         # baixa a pasta como .zip
+curl -X POST $P/nodes/pg1/reset-data           # zera os dados (volumes mdd-node-…-pg1*); 409 se estiver rodando
 curl -X POST $P/runs -d '{}'                   # roda cada fluxo (ou {"from": "upload"}); idempotente
 curl $P/runs                                   # histórico
 curl $P/runs/current                           # {runs: rodando, latest: a última que terminou}

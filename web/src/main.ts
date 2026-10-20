@@ -90,12 +90,39 @@ async function fromTemplate(name: string, x: number, y: number) {
   }
 }
 
-const TEMPLATE_ICON: Record<string, string> = { web: '🌐', 'web-react': '⚛️', 'python-service': '🐍', 'python-job': '🐍', 'go-service': '🐹', 'go-job': '🐹' };
+const TEMPLATE_ICON: Record<string, string> = {
+  web: '🌐',
+  'web-react': '⚛️',
+  'python-service': '🐍',
+  'python-job': '🐍',
+  'go-service': '🐹',
+  'go-job': '🐹',
+  postgres: '🐘',
+  mongo: '🍃',
+  redis: '🟥',
+  pgadmin: '🛠️',
+  'mongo-express': '🧭',
+  redisinsight: '🔬',
+};
+const TEMPLATE_GROUPS: [Template['group'], string][] = [
+  ['app', 'Apps'],
+  ['db', 'Bancos de dados'],
+  ['admin', 'Admin dos bancos'],
+];
 
 api<Template[]>('GET', '/api/templates').then(
   (list) => {
     const host = $('#templates');
-    for (const t of list) {
+    // Agrupados: apps, bancos e as telas de admin (ligue o banco a elas com uma seta `pronto`).
+    const ordered = TEMPLATE_GROUPS.flatMap(([group, title]) => {
+      const items = list.filter((t) => (t.group ?? 'app') === group);
+      return items.length ? [title, ...items] : [];
+    });
+    for (const t of ordered) {
+      if (typeof t === 'string') {
+        host.append(Object.assign(document.createElement('div'), { className: 'template-group', textContent: t }));
+        continue;
+      }
       const tool = Object.assign(document.createElement('div'), {
         className: 'tool template',
         role: 'button',

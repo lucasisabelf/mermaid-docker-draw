@@ -15,6 +15,7 @@
 //	DELETE /api/nodes/:ref/files/:caminho      apaga
 //	POST   /api/nodes/:ref/files.zip           envia um .zip para a pasta (?mode=replace|merge) → {files, root, skipped, keptRunSh}
 //	GET    /api/nodes/:ref/files.zip           baixa a pasta como .zip
+//	POST   /api/nodes/:ref/reset-data          apaga os volumes do retângulo (dados do banco, venv…) → {removed}; 409 rodando
 //	GET    /api/templates                      templates da paleta (Web, Python, Go)
 //	POST   /api/templates/:nome                cria um retângulo do template {x?, y?, text?} → {node, port}
 //	GET    /api/edges                          lista as setas
@@ -448,6 +449,8 @@ func (a *API) routeNodes(w http.ResponseWriter, r *http.Request, parts []string,
 		return nil
 	case len(parts) == 3 && action == "files.zip":
 		return a.routeFilesZip(w, r, n, source)
+	case len(parts) == 3 && action == "reset-data" && method == http.MethodPost:
+		return a.resetData(w, n, source)
 	case len(parts) == 3 && method == http.MethodPost:
 		switch action {
 		case "ativar":
@@ -536,7 +539,7 @@ func (a *API) routeTemplates(w http.ResponseWriter, r *http.Request, parts []str
 	if a.PortStores != nil {
 		stores = a.PortStores()
 	}
-	port := templates.NextPort(stores, a.PortFree, a.ServerPort)
+	port := templates.NextPort(stores, a.PortFree, tpl.FirstHostPort(), a.ServerPort)
 	// Os arquivos vêm antes do retângulo: quem receber o node.added já encontra o .md pronto.
 	if err := tpl.Instantiate(a.specs, id, strings.TrimSpace(*p.Text), port); err != nil {
 		return err
@@ -652,6 +655,31 @@ func (a *API) routeFilesZip(w http.ResponseWriter, r *http.Request, n *diagram.N
 		return nil
 	}
 	a.send(w, 404, map[string]string{"error": "Rota não encontrada: " + r.Method + " " + r.URL.Path})
+	return nil
+}
+
+// resetData apaga os volumes próprios do retângulo (mdd-node-<mermaid>-<id>[-…]: os dados de um
+// banco, o venv, o node_modules), que voltam vazios na próxima execução. 409 se ele está rodando.
+func (a *API) resetData(w http.ResponseWriter, n *diagram.Node, source string) error {
+	if a.engine == nil {
+		return &diagram.OpError{Status: 503, Msg: "A execução de containers está desligada neste servidor."}
+	}
+	spec, err := a.specs.Load(n.ID, n.Text)
+	if err != nil {
+		return &diagram.OpError{Status: 400, Msg: err.Error()}
+	}
+	own := templates.NodeVolume(a.specs.ProjectDir, n.ID)
+	removed := []string{}
+	for _, v := range spec.Service.Volumes {
+		if v.Type == "volume" && (v.Source == own || strings.HasPrefix(v.Source, own+"-")) {
+			removed = append(removed, v.Source)
+		}
+	}
+	if err := a.engine.ResetVolumes(n.ID, removed); err != nil {
+		return err
+	}
+	a.Hub.Publish(map[string]any{"type": "data.reset", "id": n.ID, "volumes": removed, "source": source})
+	a.send(w, 200, map[string]any{"removed": removed})
 	return nil
 }
 

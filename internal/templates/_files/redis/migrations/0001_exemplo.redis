@@ -1,0 +1,4 @@
+# Migration de exemplo: comandos do redis-cli, um por linha, aplicados uma vez e de forma atômica.
+# Para mudar algo, crie 0002_….redis (não edite esta depois de aplicada).
+SET config:versao 1
+HSET config:limites pedidos_por_minuto 60

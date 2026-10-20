@@ -1,21 +1,20 @@
 package estoque
 
 import (
+	"context"
 	"io"
 	"net/http"
 	"net/http/httptest"
-	"path/filepath"
 	"strings"
 	"testing"
 )
 
 func TestCRUD(t *testing.T) {
-	path := filepath.Join(t.TempDir(), "estoque.json")
-	s, err := Abrir(path)
-	if err != nil {
-		t.Fatal(err)
+	mem := &Mem{}
+	for _, it := range []Item{{SKU: "CAM-01", Nome: "Camiseta", Quantidade: 42, Minimo: 10}, {SKU: "CAN-02", Nome: "Caneca", Quantidade: 7, Minimo: 10}} {
+		_ = mem.Criar(context.Background(), it)
 	}
-	srv := httptest.NewServer(Rotas(s))
+	srv := httptest.NewServer(Rotas(Servico{Store: mem}))
 	defer srv.Close()
 	do := func(method, url, body string) (int, string) {
 		req, _ := http.NewRequest(method, srv.URL+url, strings.NewReader(body))
@@ -46,7 +45,7 @@ func TestCRUD(t *testing.T) {
 	if st, _ := do("POST", "/", `{"sku":"X","nome":"a","cor":"azul"}`); st != 400 {
 		t.Errorf("campo desconhecido: %d", st)
 	}
-	if st, body := do("GET", "/?baixo=1", ""); st != 200 || !strings.Contains(body, "BON-04") || strings.Contains(body, "CAM-01") {
+	if st, body := do("GET", "/?baixo=1", ""); st != 200 || !strings.Contains(body, "BON-04") || !strings.Contains(body, "CAN-02") || strings.Contains(body, "CAM-01") {
 		t.Errorf("baixo: %s", body)
 	}
 	if st, body := do("PUT", "/bon-04", `{"sku":"BON-04","nome":"Boné aba reta","quantidade":30,"preco":49.9,"minimo":5}`); st != 200 || !strings.Contains(body, "aba reta") {
@@ -59,13 +58,8 @@ func TestCRUD(t *testing.T) {
 		t.Errorf("atualizar inexistente: %d", st)
 	}
 
-	// Persistência: reabrir o arquivo traz a alteração.
-	s2, err := Abrir(path)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if it, err := s2.Obter("bon-04"); err != nil || it.Quantidade != 30 {
-		t.Errorf("depois de reabrir: %+v %v", it, err)
+	if it, err := mem.Obter(context.Background(), "bon-04"); err != nil || it.Quantidade != 30 {
+		t.Errorf("no store: %+v %v", it, err)
 	}
 
 	if st, _ := do("DELETE", "/BON-04", ""); st != 204 {

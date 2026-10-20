@@ -15,7 +15,8 @@ function Inicio({ ir }) {
       <h1>Olá!</h1>
       <p>
         Este front-end foi enviado como <code>.zip</code> para um retângulo <b>Web · React</b>. Ele faz o CRUD de pedidos
-        na API em Python (FastAPI + SQLite) e de estoque na API em Go (chi), cada uma no seu container.
+        na API em Python (FastAPI + <b>Postgres</b>, com cache no <b>Redis</b>) e de estoque na API em Go (chi +{' '}
+        <b>MongoDB</b>). Cada um é um retângulo do fluxo, e os bancos trazem as próprias migrations.
       </p>
       <div className="cards">
         <button className="cartao kpi" onClick={() => ir('/pedidos')}>
@@ -25,6 +26,11 @@ function Inicio({ ir }) {
             {resumo.dados && STATUS.map((s) => `${resumo.dados.por_status[s] ?? 0} ${s}`).join(' · ')}
           </span>
         </button>
+        <div className="cartao kpi">
+          <span className="muted">Pedidos criados hoje (Redis)</span>
+          <strong>{resumo.dados ? resumo.dados.criados_hoje : resumo.erro ? '—' : '…'}</strong>
+          <span className="muted">{resumo.dados && `resumo: cache ${resumo.dados.cache}`}</span>
+        </div>
         <button className="cartao kpi" onClick={() => ir('/estoque')}>
           <span className="muted">Itens abaixo do mínimo</span>
           <strong className={baixo.dados?.length ? 'erro' : ''}>{baixo.dados ? baixo.dados.length : baixo.erro ? '—' : '…'}</strong>

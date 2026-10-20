@@ -2,6 +2,7 @@ import { parseDocument, type Document } from 'yaml';
 import { api, type Runtime } from './runtime';
 import { toast } from './runpanel';
 import { confirmDialog } from './dialog';
+import { nodeVolumes } from './specvolumes';
 import { filePath, formatSize, groupFiles, type FileInfo } from './filetree';
 import type { Store } from './store';
 import { API } from './project';
@@ -126,6 +127,7 @@ export class NodePanel {
   private descEl: HTMLTextAreaElement;
   private fields: Record<Field, HTMLInputElement | HTMLTextAreaElement | HTMLSelectElement>;
   private statusEl: HTMLElement;
+  private resetEl: HTMLButtonElement;
 
   constructor(
     private root: HTMLElement,
@@ -139,6 +141,8 @@ export class NodePanel {
     this.codeEl = $(root, '#np-code');
     this.descEl = $(root, '#np-desc');
     this.statusEl = $(root, '.np-status');
+    this.resetEl = $(root, '#np-reset');
+    this.resetEl.addEventListener('click', () => void this.resetData());
     this.fileListEl = $(root, '.np-file-list');
     this.fileEl = $(root, '#np-file');
     this.fileEl.addEventListener('input', () => {
@@ -282,6 +286,10 @@ export class NodePanel {
 
   /** Preenche a aba visível a partir de `markdown`. */
   private render() {
+    // "Zerar dados" só aparece com volume próprio (banco, venv, node_modules) no yaml.
+    const volumes = nodeVolumes(this.markdown);
+    this.resetEl.hidden = !volumes.length;
+    this.resetEl.title = `Apaga ${volumes.join(', ')}: na próxima execução começa do zero.`;
     if (this.tab === 'files') {
       if (this.id) void this.loadFiles(false);
       return;
@@ -491,6 +499,27 @@ export class NodePanel {
       toast(msg, false);
     } catch (err) {
       if (this.id === id) this.setStatus((err as Error).message, true);
+      toast((err as Error).message);
+    }
+  }
+
+  /** Apaga os volumes próprios do retângulo (dados do banco…): as migrations e seeds rodam de novo. */
+  private async resetData() {
+    const id = this.id;
+    if (!id) return;
+    const volumes = nodeVolumes(this.markdown);
+    const ok = await confirmDialog(
+      `reset:${id}`,
+      `Zerar os dados de ${this.store.node(id)?.text ?? id}?`,
+      `Apaga ${volumes.join(', ')}. Na próxima execução o retângulo começa vazio (num banco, as migrations e os seeds rodam de novo). Não dá para desfazer.`,
+      'Zerar dados',
+      true,
+    );
+    if (!ok) return;
+    try {
+      const out = await api<{ removed: string[] }>('POST', `${API}/nodes/${encodeURIComponent(id)}/reset-data`);
+      toast(`Dados zerados: ${out.removed.join(', ') || 'nada a apagar'}`, false);
+    } catch (err) {
       toast((err as Error).message);
     }
   }

@@ -1,0 +1,2 @@
+# Configuração da loja lida pelas APIs (exemplo de migration no Redis: comandos do redis-cli).
+HSET loja:config moeda BRL resumo_ttl_segundos 10

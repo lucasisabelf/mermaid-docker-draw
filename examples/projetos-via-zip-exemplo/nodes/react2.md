@@ -1,6 +1,6 @@
 # Painel React (dev)
 
-Painel da loja em **React (Vite)**, enviado como `.zip`: CRUD de pedidos (API Python) e de estoque (API Go), com o item do pedido escolhido no estoque. Roda em **modo dev**: editar `src/*.jsx` na aba Arquivos recarrega o navegador ao vivo.
+Painel da loja em **React (Vite)**, enviado como `.zip`: CRUD de pedidos (API Python + Postgres + Redis) e de estoque (API Go + MongoDB). Roda em **modo dev**: editar `src/*.jsx` na aba Arquivos recarrega o navegador ao vivo.
 
 Os arquivos ficam em `nodes/react2/` (aba **Arquivos**): o `run.sh` provisiona e roda; edite à vontade.
 Porta: http://localhost:8086 → 80 no container.

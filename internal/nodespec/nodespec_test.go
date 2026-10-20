@@ -319,3 +319,27 @@ func TestWriteZipRoundTrip(t *testing.T) {
 		t.Errorf("ida e volta = %q", got)
 	}
 }
+
+func TestProjectSlug(t *testing.T) {
+	for dir, want := range map[string]string{
+		"/work/Minha Loja":        "minha-loja",
+		"/work/loja (cópia)":      "loja-c-pia",
+		"/work/projetos-via-zip":  "projetos-via-zip",
+		`C:\src\Fluxo.Teste`:      "fluxo.teste",
+	} {
+		if got := ProjectSlug(filepath.FromSlash(strings.ReplaceAll(dir, `\`, "/"))); got != want {
+			t.Errorf("ProjectSlug(%q) = %q, quer %q", dir, got, want)
+		}
+	}
+}
+
+func TestMDDHostIsRuntimeVar(t *testing.T) {
+	// $MDD_HOST (o nome do retângulo na rede) fica para o shell do container, como as outras MDD_*.
+	spec, err := Parse("n1", "```yaml\nimage: alpine\ncommand: [\"sh\", \"-c\", \"echo $MDD_HOST\"]\n```", "/proj")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := spec.Service.Command[2]; got != "echo ${MDD_HOST}" {
+		t.Errorf("command = %q", got)
+	}
+}

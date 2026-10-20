@@ -92,6 +92,8 @@ export const RUN_LABEL: Record<Run['status'], string> = {
 };
 
 export interface Template {
+  /** Seção da paleta: app, db (bancos) ou admin (telas de admin dos bancos). */
+  group: 'app' | 'db' | 'admin';
   name: string;
   label: string;
   description: string;

@@ -1,0 +1,2 @@
+# Contadores começam zerados num banco novo.
+SET loja:visitas 0

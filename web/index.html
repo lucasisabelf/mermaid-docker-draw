@@ -98,7 +98,10 @@
           </div>
           <p class="np-empty hint">Selecione um retângulo para configurar o container dele (nodes/&lt;id&gt;.md).</p>
           <div class="np-body" hidden>
-            <label class="check"><input type="checkbox" id="np-start" /> Bloco de início <kbd>I</kbd></label>
+            <div class="np-row">
+              <label class="check"><input type="checkbox" id="np-start" /> Bloco de início <kbd>I</kbd></label>
+              <button type="button" id="np-reset" class="np-reset" hidden>Zerar dados</button>
+            </div>
             <div class="np-simple">
               <label>Descrição (markdown)<textarea id="np-desc" rows="3" spellcheck="false"></textarea></label>
               <label>Imagem<input id="np-image" placeholder="alpine:3.20" spellcheck="false" /></label>

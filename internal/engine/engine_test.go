@@ -50,6 +50,24 @@ type fakeRuntime struct {
 	scripts map[string]script
 	envs    map[string][]string
 	volumes map[string]bool
+	// Redes criadas e as redes/hosts de cada container.
+	networks   map[string]bool
+	attached   map[string][]docker.NetworkAttach
+	extraHosts map[string][]string
+}
+
+func (f *fakeRuntime) EnsureNetwork(_ context.Context, name string, _ map[string]string) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.networks[name] = true
+	return nil
+}
+
+func (f *fakeRuntime) RemoveNetwork(_ context.Context, name string) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	delete(f.networks, name)
+	return nil
 }
 
 func (f *fakeRuntime) EnsureImage(context.Context, string, func(string)) error { return nil }
@@ -77,6 +95,8 @@ func (f *fakeRuntime) Run(_ context.Context, spec docker.ContainerSpec) (Process
 	f.mu.Lock()
 	sc, ok := f.scripts[node]
 	f.envs[node] = spec.Env
+	f.attached[node] = spec.Networks
+	f.extraHosts[node] = spec.ExtraHosts
 	f.mu.Unlock()
 	if !ok {
 		return nil, errors.New("sem roteiro para " + node)
@@ -109,6 +129,8 @@ func (f *fakeRuntime) Run(_ context.Context, spec docker.ContainerSpec) (Process
 // ---- montagem ---------------------------------------------------------------
 
 type harness struct {
+	// yaml de cada retângulo (padrão: só a imagem), lido na hora de rodar.
+	yaml   map[string]string
 	t      *testing.T
 	e      *Engine
 	rt     *fakeRuntime
@@ -138,14 +160,19 @@ func setup(t *testing.T, nodes []string, edges []string, scripts map[string]scri
 		from, to, _ := strings.Cut(ends, ">")
 		d.Edges = append(d.Edges, &diagram.Edge{ID: "e" + string(rune('1'+i)), From: from, To: to, Text: text})
 	}
-	rt := &fakeRuntime{scripts: scripts, envs: map[string][]string{}, volumes: map[string]bool{}}
+	rt := &fakeRuntime{scripts: scripts, envs: map[string][]string{}, volumes: map[string]bool{},
+		networks: map[string]bool{}, attached: map[string][]docker.NetworkAttach{}, extraHosts: map[string][]string{}}
 	store, err := runs.NewStore(t.TempDir())
 	if err != nil {
 		t.Fatal(err)
 	}
-	h := &harness{t: t, rt: rt, events: make(chan map[string]any, 1024), d: d}
+	h := &harness{t: t, rt: rt, events: make(chan map[string]any, 1024), d: d, yaml: map[string]string{}}
 	load := func(id, _ string) (*nodespec.Spec, error) {
-		spec, err := nodespec.Parse(id, "```yaml\nimage: alpine\n```", "/proj")
+		y := h.yaml[id]
+		if y == "" {
+			y = "image: alpine"
+		}
+		spec, err := nodespec.Parse(id, "```yaml\n"+y+"\n```", "/proj")
 		if err != nil {
 			return nil, err
 		}
@@ -158,7 +185,24 @@ func setup(t *testing.T, nodes []string, edges []string, scripts map[string]scri
 		var out map[string]any
 		_ = json.Unmarshal(b, &out)
 		h.events <- out
-	}, Config{APIURL: "http://mdd:8080/api/p/teste", StopTimeout: time.Second})
+	}, h.cfg(Config{}))
+	return h
+}
+
+// cfg completa a configuração dos testes; `setupWith` troca campos (ex.: Network, Project).
+func (h *harness) cfg(c Config) Config {
+	c.APIURL = "http://mdd:8080/api/p/teste"
+	c.StopTimeout = time.Second
+	if c.Project == "" {
+		c.Project = "/work/Minha Loja"
+	}
+	return c
+}
+
+// setupWith é o setup com outra configuração da engine.
+func setupWith(t *testing.T, cfg Config, nodes []string, edges []string, scripts map[string]script) *harness {
+	h := setup(t, nodes, edges, scripts)
+	h.e = New(h.rt, h.e.load, h.e.store, h.e.publish, h.cfg(cfg))
 	return h
 }
 
@@ -498,4 +542,83 @@ func TestIndependentFlows(t *testing.T) {
 	}
 	_ = h.e.Stop(web.ID)
 	h.finished()
+}
+
+// ---- rede: cada retângulo é achado pelo id ------------------------------------
+
+func TestNetworkAlias(t *testing.T) {
+	h := setup(t, []string{"pg1:service", "api"}, []string{"pg1>api:pronto"}, map[string]script{
+		"pg1": {steps: []step{{print: "::mdd emit pronto"}, {block: true}}},
+		"api": ok("conectando em pg1:5432"),
+	})
+	h.start()
+	h.finished()
+	// Uma rede por mermaid (o nome vem da pasta), e cada container entra nela com o id como alias.
+	if !h.rt.networks["mdd-net-minha-loja"] {
+		t.Errorf("redes = %v", h.rt.networks)
+	}
+	for _, id := range []string{"pg1", "api"} {
+		nets := h.rt.attached[id]
+		if len(nets) != 1 || nets[0].Name != "mdd-net-minha-loja" || len(nets[0].Aliases) != 1 || nets[0].Aliases[0] != id {
+			t.Errorf("%s: redes = %+v", id, nets)
+		}
+		if !strings.Contains(strings.Join(h.rt.extraHosts[id], ","), "host.docker.internal:host-gateway") {
+			t.Errorf("%s: sem host.docker.internal (o callback depende dele): %v", id, h.rt.extraHosts[id])
+		}
+		if !strings.Contains(strings.Join(h.rt.env(id), " "), "MDD_HOST="+id) {
+			t.Errorf("%s: env sem MDD_HOST: %v", id, h.rt.env(id))
+		}
+	}
+}
+
+func TestNetworkComposeMode(t *testing.T) {
+	// Servidor em container (docker compose): os containers também entram na rede dele, para o callback.
+	h := setupWith(t, Config{Network: "mermaid-docker-draw"}, []string{"a"}, nil, map[string]script{"a": ok()})
+	h.start()
+	h.finished()
+	nets := h.rt.attached["a"]
+	if len(nets) != 2 || nets[0].Name != "mdd-net-minha-loja" || nets[0].Aliases[0] != "a" || nets[1].Name != "mermaid-docker-draw" {
+		t.Errorf("redes = %+v", nets)
+	}
+	if len(h.rt.extraHosts["a"]) != 0 {
+		t.Errorf("no modo compose não precisa de host.docker.internal: %v", h.rt.extraHosts["a"])
+	}
+}
+
+func TestNetworkModeFromYAML(t *testing.T) {
+	h := setup(t, []string{"a"}, nil, map[string]script{"a": ok()})
+	h.yaml["a"] = "image: alpine\nnetwork_mode: host"
+	h.start()
+	h.finished()
+	if nets := h.rt.attached["a"]; len(nets) != 0 {
+		t.Errorf("network_mode do yaml deveria valer sozinho: %+v", nets)
+	}
+}
+
+// ---- zerar dados ----------------------------------------------------------------
+
+func TestResetVolumes(t *testing.T) {
+	h := setup(t, []string{"pg1:service"}, nil, map[string]script{"pg1": {steps: []step{{block: true}}}})
+	h.rt.volumes["mdd-node-minha-loja-pg1-dados"] = true
+	r := h.start()
+	h.wait("run.node")
+	var op *diagram.OpError
+	err := h.e.ResetVolumes("pg1", []string{"mdd-node-minha-loja-pg1-dados"})
+	if !errors.As(err, &op) || op.Status != 409 || !strings.Contains(op.Msg, "rodando") {
+		t.Fatalf("zerar com o retângulo rodando deveria falhar (409): %v", err)
+	}
+	if !h.e.NodeActive("pg1") {
+		t.Error("NodeActive deveria ver o pg1 rodando")
+	}
+	_ = h.e.Stop(r.ID)
+	h.finished()
+	if h.e.NodeActive("pg1") {
+		t.Error("NodeActive depois de parar")
+	}
+	if err := h.e.ResetVolumes("pg1", []string{"mdd-node-minha-loja-pg1-dados"}); err != nil {
+		t.Fatal(err)
+	}
+	if h.rt.volumes["mdd-node-minha-loja-pg1-dados"] {
+		t.Error("o volume deveria ter sido removido")
+	}
 }

@@ -1,33 +1,70 @@
 {
-  "rev": 11,
+  "rev": 57,
   "diagram": {
     "nodes": [
       {
         "id": "py1",
         "text": "API de pedidos (FastAPI)",
+        "x": 450,
+        "y": 150
+      },
+      {
+        "id": "go1",
+        "text": "API de estoque (Go + chi)",
+        "x": 450,
+        "y": 380
+      },
+      {
+        "id": "react1",
+        "text": "Painel React (build)",
+        "x": 780,
+        "y": 265
+      },
+      {
+        "id": "react2",
+        "text": "Painel React (dev)",
+        "x": 780,
+        "y": 470,
+        "start": true
+      },
+      {
+        "id": "pg1",
+        "text": "Postgres (pedidos)",
         "x": 120,
         "y": 80,
         "start": true
       },
       {
-        "id": "go1",
-        "text": "API de estoque (Go + chi)",
+        "id": "redis1",
+        "text": "Redis (cache)",
         "x": 120,
-        "y": 260,
+        "y": 230,
         "start": true
       },
       {
-        "id": "react1",
-        "text": "Painel React (build)",
-        "x": 460,
-        "y": 170
-      },
-      {
-        "id": "react2",
-        "text": "Painel React (dev)",
-        "x": 460,
+        "id": "mongo1",
+        "text": "MongoDB (estoque)",
+        "x": 120,
         "y": 380,
         "start": true
+      },
+      {
+        "id": "pgadmin1",
+        "text": "pgAdmin",
+        "x": -220,
+        "y": 80
+      },
+      {
+        "id": "redisinsight1",
+        "text": "RedisInsight",
+        "x": -220,
+        "y": 230
+      },
+      {
+        "id": "mongoexpress1",
+        "text": "mongo-express",
+        "x": -220,
+        "y": 380
       }
     ],
     "edges": [
@@ -41,6 +78,42 @@
         "id": "e2",
         "from": "go1",
         "to": "react1",
+        "text": "pronto"
+      },
+      {
+        "id": "e3",
+        "from": "pg1",
+        "to": "py1",
+        "text": "pronto"
+      },
+      {
+        "id": "e4",
+        "from": "redis1",
+        "to": "py1",
+        "text": "pronto"
+      },
+      {
+        "id": "e5",
+        "from": "mongo1",
+        "to": "go1",
+        "text": "pronto"
+      },
+      {
+        "id": "e6",
+        "from": "pg1",
+        "to": "pgadmin1",
+        "text": "pronto"
+      },
+      {
+        "id": "e7",
+        "from": "redis1",
+        "to": "redisinsight1",
+        "text": "pronto"
+      },
+      {
+        "id": "e8",
+        "from": "mongo1",
+        "to": "mongoexpress1",
         "text": "pronto"
       }
     ]

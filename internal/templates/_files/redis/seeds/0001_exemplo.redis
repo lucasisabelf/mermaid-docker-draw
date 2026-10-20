@@ -1,0 +1,3 @@
+# Dados de exemplo: rodam uma vez, depois das migrations.
+SET contador:visitas 0
+RPUSH fila:exemplo primeiro segundo

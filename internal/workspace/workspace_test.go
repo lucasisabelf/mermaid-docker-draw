@@ -35,18 +35,28 @@ func (p *proc) Stop(time.Duration) error {
 	return nil
 }
 
-type fakeRuntime struct{}
+type fakeRuntime struct {
+	mu          sync.Mutex
+	removedNets []string
+}
 
-func (fakeRuntime) EnsureImage(context.Context, string, func(string)) error       { return nil }
-func (fakeRuntime) CreateVolume(context.Context, string, map[string]string) error { return nil }
-func (fakeRuntime) RemoveVolume(context.Context, string) error                    { return nil }
-func (fakeRuntime) Run(context.Context, docker.ContainerSpec) (engine.Process, error) {
+func (*fakeRuntime) EnsureImage(context.Context, string, func(string)) error        { return nil }
+func (*fakeRuntime) CreateVolume(context.Context, string, map[string]string) error  { return nil }
+func (*fakeRuntime) RemoveVolume(context.Context, string) error                     { return nil }
+func (*fakeRuntime) EnsureNetwork(context.Context, string, map[string]string) error { return nil }
+func (f *fakeRuntime) RemoveNetwork(_ context.Context, name string) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.removedNets = append(f.removedNets, name)
+	return nil
+}
+func (*fakeRuntime) Run(context.Context, docker.ContainerSpec) (engine.Process, error) {
 	return &proc{lines: make(chan docker.Line), stop: make(chan struct{})}, nil
 }
 
 func setup(t *testing.T) (*Manager, *httptest.Server) {
 	t.Helper()
-	m, err := New(Config{Dir: t.TempDir(), Runtime: fakeRuntime{}, CallbackURL: "http://mdd:8080", ServerPort: 8080})
+	m, err := New(Config{Dir: t.TempDir(), Runtime: &fakeRuntime{}, CallbackURL: "http://mdd:8080", ServerPort: 8080})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -262,5 +272,20 @@ func TestRunAndStopFromMenu(t *testing.T) {
 	}
 	if it := m.item("meu-fluxo"); it.Running != 0 || it.LastRun == nil || it.LastRun.Status != "stopped" {
 		t.Errorf("depois de parar: %+v", it)
+	}
+}
+
+func TestDeleteRemovesNetwork(t *testing.T) {
+	m, srv := setup(t)
+	call(t, srv, "POST", "/api/projects", map[string]string{"name": "Loja"})
+	if r := call(t, srv, "DELETE", "/api/projects/loja", nil); r.status != 204 {
+		t.Fatalf("apagar: %d %s", r.status, r.body)
+	}
+	// A rede do mermaid (onde os retângulos se acham pelo id) vai junto.
+	rt := m.cfg.Runtime.(*fakeRuntime)
+	rt.mu.Lock()
+	defer rt.mu.Unlock()
+	if len(rt.removedNets) != 1 || rt.removedNets[0] != "mdd-net-loja" {
+		t.Errorf("redes removidas = %v", rt.removedNets)
 	}
 }

@@ -1,6 +1,6 @@
 # Painel React (build)
 
-Painel da loja em **React (Vite)**, enviado como `.zip`: CRUD de pedidos (API Python) e de estoque (API Go), com o item do pedido escolhido no estoque. Sobe depois que as duas APIs emitem `pronto`: instala, faz o build (`::mdd emit build_pronto`) e serve pelo nginx, com as rotas da SPA (/pedidos, /estoque) caindo no index.html.
+Painel da loja em **React (Vite)**, enviado como `.zip`: CRUD de pedidos (API Python + Postgres + Redis) e de estoque (API Go + MongoDB). Sobe depois que as duas APIs emitem `pronto`: instala, faz o build (`::mdd emit build_pronto`) e serve pelo nginx.
 
 Os arquivos ficam em `nodes/react1/` (aba **Arquivos**): o `run.sh` provisiona e roda; edite à vontade.
 Porta: http://localhost:8085 → 80 no container.

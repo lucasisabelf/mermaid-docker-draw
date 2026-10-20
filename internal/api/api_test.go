@@ -4,6 +4,7 @@ import (
 	"archive/zip"
 	"bufio"
 	"bytes"
+	"context"
 	"encoding/json"
 	"io"
 	"net/http"
@@ -11,9 +12,15 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
+	"time"
 
+	"github.com/lucasisabelf/mermaid-docker-draw/internal/docker"
+	"github.com/lucasisabelf/mermaid-docker-draw/internal/engine"
 	"github.com/lucasisabelf/mermaid-docker-draw/internal/nodespec"
+	"github.com/lucasisabelf/mermaid-docker-draw/internal/runs"
+	"github.com/lucasisabelf/mermaid-docker-draw/internal/templates"
 )
 
 const sampleCode = `flowchart LR
@@ -216,7 +223,7 @@ func equalJSON(a, b any) bool {
 
 func TestTemplatesAndFiles(t *testing.T) {
 	srv, dir := start(t)
-	if r := call(t, srv, "GET", "/templates", nil); len(r.json.([]any)) != 6 {
+	if r := call(t, srv, "GET", "/templates", nil); len(r.json.([]any)) != 12 {
 		t.Fatalf("templates: %s", r.text)
 	}
 	r := call(t, srv, "POST", "/templates/python-service", map[string]any{"x": 100, "y": 100})
@@ -340,5 +347,91 @@ func TestFilesZip(t *testing.T) {
 	}
 	if r := call(t, srv, "POST", "/nodes/py1/files.zip?mode=tudo", buf.Bytes()); r.status != 400 {
 		t.Errorf("modo inválido: %d", r.status)
+	}
+}
+
+// ---- zerar dados --------------------------------------------------------------
+
+// fakeRuntime: containers que só terminam quando parados, e volumes removidos anotados.
+type fakeRuntime struct {
+	mu      sync.Mutex
+	removed []string
+}
+
+type blockedProc struct {
+	lines chan docker.Line
+	stop  chan struct{}
+	once  sync.Once
+}
+
+func (p *blockedProc) Lines() <-chan docker.Line { return p.lines }
+func (p *blockedProc) Wait() (int, error)        { <-p.stop; return 143, nil }
+func (p *blockedProc) Remove() error             { return nil }
+func (p *blockedProc) Stop(time.Duration) error {
+	p.once.Do(func() { close(p.stop); close(p.lines) })
+	return nil
+}
+
+func (f *fakeRuntime) EnsureImage(context.Context, string, func(string)) error         { return nil }
+func (f *fakeRuntime) CreateVolume(context.Context, string, map[string]string) error   { return nil }
+func (f *fakeRuntime) EnsureNetwork(context.Context, string, map[string]string) error  { return nil }
+func (f *fakeRuntime) RemoveNetwork(context.Context, string) error                      { return nil }
+func (f *fakeRuntime) RemoveVolume(_ context.Context, name string) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.removed = append(f.removed, name)
+	return nil
+}
+func (f *fakeRuntime) Run(context.Context, docker.ContainerSpec) (engine.Process, error) {
+	return &blockedProc{lines: make(chan docker.Line), stop: make(chan struct{})}, nil
+}
+
+func TestResetData(t *testing.T) {
+	dir := t.TempDir()
+	specs := nodespec.Store{Dir: filepath.Join(dir, "nodes"), ProjectDir: dir}
+	a, err := New(filepath.Join(dir, "diagram.json"), specs, NewHub())
+	if err != nil {
+		t.Fatal(err)
+	}
+	rt := &fakeRuntime{}
+	store, _ := runs.NewStore(filepath.Join(dir, "runs"))
+	e := engine.New(rt, a.LoadSpec, store, func(ev map[string]any) { a.Hub.Publish(ev) }, engine.Config{Project: dir, StopTimeout: time.Second})
+	a.Attach(e, store)
+	srv := httptest.NewServer(a)
+	t.Cleanup(func() { e.Shutdown(time.Second); a.Hub.Close(); srv.Close() })
+
+	call(t, srv, "POST", "/templates/postgres", map[string]any{})
+	call(t, srv, "POST", "/templates/python-service", map[string]any{})
+	plain := field(call(t, srv, "POST", "/nodes", map[string]any{"text": "Sem volume"}).json, "id").(string)
+	dados := templates.NodeVolume(dir, "pg1") + "-dados"
+
+	r := call(t, srv, "POST", "/nodes/pg1/reset-data", nil)
+	if r.status != 200 || len(field(r.json, "removed").([]any)) != 1 || field(r.json, "removed").([]any)[0] != dados {
+		t.Fatalf("zerar pg1: %d %s (quer %s)", r.status, r.text, dados)
+	}
+	// No Python, o volume do retângulo é o venv: zerar também o recria.
+	if r := call(t, srv, "POST", "/nodes/py1/reset-data", nil); r.status != 200 || field(r.json, "removed").([]any)[0] != templates.NodeVolume(dir, "py1") {
+		t.Errorf("zerar py1: %d %s", r.status, r.text)
+	}
+	// Retângulo sem volume próprio: nada a apagar, sem erro.
+	if r := call(t, srv, "POST", "/nodes/"+plain+"/reset-data", nil); r.status != 200 || len(field(r.json, "removed").([]any)) != 0 {
+		t.Errorf("sem volume: %d %s", r.status, r.text)
+	}
+	if r := call(t, srv, "POST", "/nodes/nada/reset-data", nil); r.status != 404 {
+		t.Errorf("inexistente: %d", r.status)
+	}
+
+	// Rodando: recusa com 409 e não apaga nada.
+	run := call(t, srv, "POST", "/runs", map[string]any{"from": "pg1"})
+	if run.status != 201 && run.status != 200 {
+		t.Fatalf("rodar: %d %s", run.status, run.text)
+	}
+	time.Sleep(100 * time.Millisecond)
+	before := len(rt.removed)
+	if r := call(t, srv, "POST", "/nodes/pg1/reset-data", nil); r.status != 409 {
+		t.Errorf("rodando: %d %s", r.status, r.text)
+	}
+	if len(rt.removed) != before {
+		t.Error("não podia ter apagado com o banco rodando")
 	}
 }

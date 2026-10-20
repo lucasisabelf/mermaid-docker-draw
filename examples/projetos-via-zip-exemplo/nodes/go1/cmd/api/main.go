@@ -1,37 +1,48 @@
-// API de estoque em Go com chi: CRUD de itens, gravado em $DATA_DIR/estoque.json (um volume, para
-// sobreviver entre execuções). Enviada como .zip para um retângulo Go · serviço; o pacote main fica
-// em cmd/api e o run.sh do template o encontra sozinho.
+// API de estoque em Go com chi: CRUD de itens no MongoDB do retângulo mongo1 (achado pelo nome na
+// rede do mermaid). O esquema (índice único no SKU) e os itens de exemplo vêm das migrations e dos
+// seeds do mongo1. Enviada como .zip para um retângulo Go · serviço; o pacote main fica em cmd/api
+// e o run.sh do template o encontra sozinho.
 package main
 
 import (
+	"context"
 	"log"
 	"net/http"
 	"os"
-	"path/filepath"
+	"time"
 
 	"exemplo/estoque/internal/estoque"
 
 	"github.com/go-chi/chi/v5"
 	"github.com/go-chi/chi/v5/middleware"
+	"go.mongodb.org/mongo-driver/v2/mongo"
+	"go.mongodb.org/mongo-driver/v2/mongo/options"
 )
 
 func main() {
 	port := env("PORT", "8000")
-	dados := filepath.Join(env("DATA_DIR", "/data"), "estoque.json")
-	store, err := estoque.Abrir(dados)
+	url := env("MONGO_URL", "mongodb://app:app@mongo1:27017/app?authSource=admin")
+	client, err := mongo.Connect(options.Client().ApplyURI(url).SetServerSelectionTimeout(10 * time.Second))
 	if err != nil {
 		log.Fatal(err)
 	}
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer cancel()
+	if err := client.Ping(ctx, nil); err != nil {
+		log.Fatalf("MongoDB fora do ar (%s): %v", url, err)
+	}
+	db := env("MONGO_DB", "app")
+	itens := client.Database(db).Collection("itens")
 
 	r := chi.NewRouter()
 	r.Use(middleware.Logger, middleware.Recoverer, cors)
 	r.Get("/", func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
-		_, _ = w.Write([]byte(`{"servico":"estoque","linguagem":"go","rotas":["/itens"]}` + "\n"))
+		_, _ = w.Write([]byte(`{"servico":"estoque","linguagem":"go","banco":"mongodb","rotas":["/itens"]}` + "\n"))
 	})
-	r.Mount("/itens", estoque.Rotas(store))
+	r.Mount("/itens", estoque.Rotas(estoque.Servico{Store: estoque.Mongo{C: itens}}))
 
-	log.Printf("estoque ouvindo na porta %s (dados em %s)", port, dados)
+	log.Printf("estoque ouvindo na porta %s (MongoDB, banco %s)", port, db)
 	log.Fatal(http.ListenAndServe(":"+port, r))
 }
 
