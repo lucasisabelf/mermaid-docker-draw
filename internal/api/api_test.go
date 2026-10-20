@@ -1,7 +1,9 @@
 package api
 
 import (
+	"archive/zip"
 	"bufio"
+	"bytes"
 	"encoding/json"
 	"io"
 	"net/http"
@@ -47,6 +49,8 @@ func call(t *testing.T, srv *httptest.Server, method, route string, body any) re
 	case nil:
 	case string:
 		r = strings.NewReader(b)
+	case []byte:
+		r = bytes.NewReader(b)
 	default:
 		raw, _ := json.Marshal(b)
 		r = strings.NewReader(string(raw))
@@ -212,7 +216,7 @@ func equalJSON(a, b any) bool {
 
 func TestTemplatesAndFiles(t *testing.T) {
 	srv, dir := start(t)
-	if r := call(t, srv, "GET", "/templates", nil); len(r.json.([]any)) != 5 {
+	if r := call(t, srv, "GET", "/templates", nil); len(r.json.([]any)) != 6 {
 		t.Fatalf("templates: %s", r.text)
 	}
 	r := call(t, srv, "POST", "/templates/python-service", map[string]any{"x": 100, "y": 100})
@@ -238,7 +242,7 @@ func TestTemplatesAndFiles(t *testing.T) {
 	if r := call(t, srv, "GET", "/nodes/py1/files/main.py", nil); r.text != "print('editado')" {
 		t.Errorf("GET = %q", r.text)
 	}
-	for _, bad := range []string{"/nodes/py1/files/..%2Fdiagram.json", "/nodes/py1/files/.env"} {
+	for _, bad := range []string{"/nodes/py1/files/..%2Fdiagram.json", "/nodes/py1/files/node_modules/x.js", "/nodes/py1/files/src/../../x"} {
 		if r := call(t, srv, "PUT", bad, "x"); r.status != 400 {
 			t.Errorf("%s: %d", bad, r.status)
 		}
@@ -248,5 +252,93 @@ func TestTemplatesAndFiles(t *testing.T) {
 	}
 	if r := call(t, srv, "GET", "/nodes/py1/files/main.py", nil); r.status != 404 {
 		t.Errorf("depois de apagar: %d", r.status)
+	}
+}
+
+func TestFilesZip(t *testing.T) {
+	srv, dir := start(t)
+	if r := call(t, srv, "POST", "/templates/python-service", map[string]any{}); r.status != 201 {
+		t.Fatalf("criar: %s", r.text)
+	}
+	var buf bytes.Buffer
+	zw := zip.NewWriter(&buf)
+	for name, body := range map[string]string{
+		"api/app.py": "app = 1", "api/requirements.txt": "fastapi", "api/static/logo.png": "\x89PNG\x00\x01",
+		"api/.venv/bin/python": "lixo",
+	} {
+		w, _ := zw.Create(name)
+		_, _ = w.Write([]byte(body))
+	}
+	_ = zw.Close()
+
+	r := call(t, srv, "POST", "/nodes/py1/files.zip", buf.Bytes())
+	if r.status != 200 || field(r.json, "files") != 3.0 || field(r.json, "root") != "api" || field(r.json, "keptRunSh") != true || field(r.json, "skipped") != 1.0 {
+		t.Fatalf("envio: %d %s", r.status, r.text)
+	}
+	if _, err := os.Stat(filepath.Join(dir, "nodes", "py1", "main.py")); !os.IsNotExist(err) {
+		t.Error("replace deveria ter apagado o main.py do template")
+	}
+	list := call(t, srv, "GET", "/nodes/py1/files", nil)
+	var got []string
+	for _, f := range list.json.([]any) {
+		got = append(got, field(f, "name").(string))
+		if field(f, "name") == "static/logo.png" && field(f, "text") != false {
+			t.Error("logo.png não é texto")
+		}
+	}
+	if strings.Join(got, ",") != "run.sh,app.py,requirements.txt,static/logo.png" {
+		t.Errorf("arquivos: %v", got)
+	}
+	// Subpasta pelo caminho em partes ou com a barra codificada.
+	if r := call(t, srv, "PUT", "/nodes/py1/files/static/site.css", "body{}"); r.status != 204 {
+		t.Errorf("PUT subpasta: %d %s", r.status, r.text)
+	}
+	if r := call(t, srv, "GET", "/nodes/py1/files/static%2Fsite.css", nil); r.text != "body{}" {
+		t.Errorf("GET subpasta = %q", r.text)
+	}
+
+	// merge acrescenta sem apagar.
+	buf.Reset()
+	zw = zip.NewWriter(&buf)
+	w, _ := zw.Create("extra.py")
+	_, _ = w.Write([]byte("x"))
+	_ = zw.Close()
+	if r := call(t, srv, "POST", "/nodes/py1/files.zip?mode=merge", buf.Bytes()); r.status != 200 {
+		t.Fatalf("merge: %d %s", r.status, r.text)
+	}
+	if _, err := os.Stat(filepath.Join(dir, "nodes", "py1", "app.py")); err != nil {
+		t.Error("merge apagou o app.py")
+	}
+
+	// Download: o zip tem tudo, e o binário baixa com o tipo detectado.
+	req, _ := http.NewRequest("GET", srv.URL+"/api/nodes/py1/files.zip", nil)
+	res, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	body, _ := io.ReadAll(res.Body)
+	res.Body.Close()
+	if res.Header.Get("Content-Type") != "application/zip" || !strings.Contains(res.Header.Get("Content-Disposition"), "py1.zip") {
+		t.Errorf("cabeçalhos: %v", res.Header)
+	}
+	zr, err := zip.NewReader(bytes.NewReader(body), int64(len(body)))
+	if err != nil || len(zr.File) != 6 {
+		t.Errorf("zip baixado: %v %d", err, len(zr.File))
+	}
+	req, _ = http.NewRequest("GET", srv.URL+"/api/nodes/py1/files/static/logo.png?download", nil)
+	res, _ = http.DefaultClient.Do(req)
+	res.Body.Close()
+	if strings.HasPrefix(res.Header.Get("Content-Type"), "text/") || !strings.Contains(res.Header.Get("Content-Disposition"), "logo.png") {
+		t.Errorf("download do binário: %v", res.Header)
+	}
+
+	// Recusados.
+	for name, data := range map[string][]byte{"não-zip": []byte("x"), "grande": make([]byte, 20<<20+1)} {
+		if r := call(t, srv, "POST", "/nodes/py1/files.zip", data); r.status != 400 && r.status != 413 {
+			t.Errorf("%s: %d %s", name, r.status, r.text)
+		}
+	}
+	if r := call(t, srv, "POST", "/nodes/py1/files.zip?mode=tudo", buf.Bytes()); r.status != 400 {
+		t.Errorf("modo inválido: %d", r.status)
 	}
 }

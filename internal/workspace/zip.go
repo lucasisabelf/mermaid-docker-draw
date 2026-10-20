@@ -2,24 +2,20 @@ package workspace
 
 import (
 	"archive/zip"
-	"bytes"
 	"encoding/json"
 	"io"
 	"io/fs"
 	"os"
-	"path"
 	"path/filepath"
 	"strings"
 	"time"
 
 	"github.com/lucasisabelf/mermaid-docker-draw/internal/diagram"
+	"github.com/lucasisabelf/mermaid-docker-draw/internal/zipsafe"
 )
 
-const (
-	// MaxImport limita o .zip recebido e o total descompactado.
-	MaxImport       = 20 << 20
-	maxUncompressed = 100 << 20
-)
+// MaxImport limita o .zip recebido.
+const MaxImport = zipsafe.MaxZip
 
 // Export grava o mermaid como .zip: mermaid.json, diagram.json e nodes/ (sem histórico nem lixeira).
 func (m *Manager) Export(slug string, w io.Writer) (name string, err error) {
@@ -83,82 +79,22 @@ func (m *Manager) Export(slug string, w io.Writer) (name string, err error) {
 	return meta.Name, err
 }
 
-// safeName valida um caminho de dentro do zip (nada de ../, caminho absoluto ou arquivo oculto
-// fora de nodes/<id>/.md): é o que impede um zip de escrever fora da pasta do mermaid.
-func safeName(name string) (string, bool) {
-	name = strings.ReplaceAll(name, `\`, "/")
-	if name == "" || strings.HasPrefix(name, "/") || strings.Contains(name, ":") {
-		return "", false
-	}
-	clean := path.Clean(name)
-	if clean == "." || clean == ".." || strings.HasPrefix(clean, "../") || strings.Contains(clean, "/../") {
-		return "", false
-	}
-	return clean, true
-}
-
 // Import cria um mermaid a partir de um .zip exportado (com o conteúdo na raiz ou numa pasta só).
+// As regras de segurança (zip-slip, links, limites, pastas ignoradas) são as do zipsafe.
 func (m *Manager) Import(name string, data []byte) (Item, error) {
-	if len(data) > MaxImport {
-		return Item{}, badRequest("O .zip passa do limite de %d MB.", MaxImport>>20)
-	}
-	zr, err := zip.NewReader(bytes.NewReader(data), int64(len(data)))
+	entries, _, err := zipsafe.Read(data)
 	if err != nil {
-		return Item{}, badRequest("Arquivo não é um .zip válido: %v", err)
+		return Item{}, badRequest("%s", err.Error())
 	}
-
 	// Tudo dentro de uma pasta só (ex.: planilha/diagram.json): essa pasta vira a raiz.
-	type entry struct {
-		name string
-		file *zip.File
+	if root := zipsafe.Root(entries); root != "" && slicesHas(entries, func(e zipsafe.Entry) bool { return e.Name == root+"/diagram.json" }) {
+		zipsafe.StripRoot(entries, root)
 	}
-	var entries []entry
-	roots := map[string]bool{}
-	var total uint64
-	for _, f := range zr.File {
-		if f.FileInfo().IsDir() {
-			continue
-		}
-		clean, ok := safeName(f.Name)
-		if !ok {
-			return Item{}, badRequest("Caminho inválido no .zip: %q.", f.Name)
-		}
-		if strings.HasPrefix(path.Base(clean), "__MACOSX") || strings.HasPrefix(clean, "__MACOSX/") {
-			continue
-		}
-		total += f.UncompressedSize64
-		if total > maxUncompressed {
-			return Item{}, badRequest("O conteúdo do .zip passa de %d MB.", maxUncompressed>>20)
-		}
-		root, _, _ := strings.Cut(clean, "/")
-		roots[root] = true
-		entries = append(entries, entry{clean, f})
-	}
-	prefix := ""
-	if len(roots) == 1 {
-		for root := range roots {
-			if !slicesHas(entries, func(e entry) bool { return e.name == "diagram.json" }) && slicesHas(entries, func(e entry) bool { return e.name == root+"/diagram.json" }) {
-				prefix = root + "/"
-			}
-		}
-	}
-
 	files := map[string][]byte{}
 	for _, e := range entries {
-		rel, ok := strings.CutPrefix(e.name, prefix)
-		if !ok || rel == "" || skipCopy(rel) {
-			continue
+		if !skipCopy(e.Name) {
+			files[e.Name] = e.Data
 		}
-		rc, err := e.file.Open()
-		if err != nil {
-			return Item{}, badRequest("Não consegui ler %q do .zip: %v", e.name, err)
-		}
-		b, err := io.ReadAll(io.LimitReader(rc, maxUncompressed))
-		rc.Close()
-		if err != nil {
-			return Item{}, badRequest("Não consegui ler %q do .zip: %v", e.name, err)
-		}
-		files[rel] = b
 	}
 
 	raw, ok := files["diagram.json"]

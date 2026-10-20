@@ -118,25 +118,61 @@ As alterações são gravadas sozinhas. Criar um retângulo cria um `.md` modelo
 
 A paleta tem retângulos que já nascem configurados. Arraste um para o canvas ou clique nele:
 
-| Template | Imagem | Arquivos | Tipo |
+| Template | Imagem | O que o `run.sh` faz | Tipo |
 |---|---|---|---|
-| 🌐 Web | `nginx:1.27-alpine` | `run.sh`, `index.html`, `app.js`, `style.css` | serviço |
-| 🐍 Python · serviço | `python:3.12-slim` | `run.sh`, `main.py` (servidor HTTP) | serviço |
-| 🐍 Python · job | `python:3.12-slim` | `run.sh`, `main.py` (processa e termina) | job |
-| 🐹 Go · serviço | `golang:1.26-alpine` | `run.sh`, `main.go` (servidor HTTP) | serviço |
-| 🐹 Go · job | `golang:1.26-alpine` | `run.sh`, `main.go` (processa e termina) | job |
+| 🌐 Web | `nginx:1.27-alpine` | serve `index.html`, `app.js` e `style.css` ao vivo | serviço |
+| ⚛️ Web · React | `node:24-alpine` | instala (`npm ci`, `pnpm` ou `yarn`, pelo lockfile) → `build` → serve `dist/` ou `build/` pelo nginx, com as rotas da SPA caindo no `index.html` | serviço |
+| 🐍 Python · serviço | `python:3.12-slim` | instala `requirements.txt` e/ou `pyproject.toml` num venv e roda o `main.py` ou o `entry` | serviço |
+| 🐍 Python · job | `python:3.12-slim` | o mesmo, para um script que processa e termina | job |
+| 🐹 Go · serviço | `golang:1.26-alpine` | usa o `go.mod` da pasta (ou cria um), compila o pacote main e roda | serviço |
+| 🐹 Go · job | `golang:1.26-alpine` | o mesmo, para um programa que processa e termina | job |
 
 Cada template cria:
 - o `nodes/<id>.md` com o yaml pronto;
-- a pasta `nodes/<id>/` com os arquivos, montada em `/app`. Ela é editável na aba **Arquivos** do painel, onde também dá para criar e apagar arquivos.
+- a pasta `nodes/<id>/` com um projeto de exemplo, montada em `/app`. Ela é editável na aba **Arquivos** do painel.
 
 O que já vem configurado:
-- **`run.sh`:** provisiona e roda. No Python, instala o `requirements.txt` se ele existir; no Go, compila. Pode ser editado à mão.
+- **`run.sh`:** provisiona e roda. Pode ser editado à mão.
 - **Porta:** escolhida sozinha, a primeira livre a partir de 8081, e editável no yaml. Enquanto o container roda, aparece um link `↗ :8081` no retângulo e no cabeçalho dos logs.
-- **Sinal de pronto:** os serviços imprimem `::mdd emit pronto` quando a porta responde. Uma seta `pronto` liga um serviço ao próximo passo.
+- **Sinal de pronto:** o `run.sh` dos serviços imprime `::mdd emit pronto` quando a porta responde, mesmo que o seu código não saiba nada do fluxo. Uma seta `pronto` liga um serviço ao próximo passo. O React também emite `::mdd emit build_pronto` quando o build termina, antes de subir o nginx.
 - **Site ao vivo:** no Web, editar `index.html`, `app.js` ou `style.css` já aparece no navegador, sem reiniciar.
 
-Por enquanto os arquivos são enviados um a um; no futuro, um `.zip` vai preencher a mesma pasta.
+### Opções do `run.sh` (no `x-mdd`)
+
+Os templates trazem estas opções comentadas no yaml. Elas chegam ao container como `$MDD_ENTRY` e `$MDD_MODE`:
+
+| Opção | Template | Efeito |
+|---|---|---|
+| `entry: uvicorn app:app --host 0.0.0.0 --port $PORT` | Python | o comando que roda, em vez do `main.py`. O `$PORT` é do shell do container |
+| `entry: ./cmd/api` | Go | o pacote main a compilar. Sem ele, vale o da raiz ou o primeiro `package main` das subpastas |
+| `mode: dev` | React | `npm run dev -- --host 0.0.0.0 --port $PORT` em vez do build: editar na aba Arquivos recarrega o navegador ao vivo |
+
+Variáveis de ambiente `VITE_*` do yaml chegam ao build do React (ex.: `VITE_API_URL: http://localhost:8083`).
+
+### Enviar o projeto inteiro (.zip)
+
+Na aba **Arquivos**, **Enviar .zip** (ou arrastar e soltar o arquivo na aba) põe o projeto inteiro na pasta do retângulo:
+- **Substituir** (padrão): limpa a pasta antes de extrair. O `run.sh` atual fica se o zip não trouxer um. Marque **mesclar** para só acrescentar e sobrescrever.
+- **Raiz:** se tudo vier dentro de uma pasta só (`meu-app/…`), essa pasta vira a raiz.
+- **Segurança:** a mesma da importação de mermaids. Caminhos com `..` ou absolutos (*zip-slip*) e links simbólicos são recusados; o zip tem limite de 20 MB e o conteúdo, de 100 MB. `__MACOSX/`, `.git/`, `node_modules/`, `__pycache__/` e `.venv/` são ignorados.
+- **Subpastas:** a aba mostra os arquivos agrupados por pasta, e os de texto continuam editáveis ali. Binários e arquivos acima de 1 MB aparecem com ↓ e só baixam.
+- **Baixar .zip** baixa a pasta do retângulo de volta.
+
+**Cache entre execuções:**
+- Os caches de pacotes ficam em volumes nomeados e compartilhados: `mdd-npm-cache`, `mdd-pip-cache`, `mdd-go-mod` e `mdd-go-build`.
+- O `node_modules` (React) e o venv (Python) ficam num volume do próprio retângulo, `mdd-node-<mermaid>-<id>`. Assim não sujam a pasta, e as dependências só são reinstaladas quando o `package.json`, o lockfile, o `requirements.txt` ou o `pyproject.toml` mudam. Duplicar ou importar um mermaid dá um volume novo para cada retângulo.
+
+**Fora do escopo por enquanto:**
+- `Dockerfile` próprio: `build:` no yaml continua não suportado.
+- Vários serviços num zip só: cada retângulo é um serviço.
+
+O exemplo [`examples/projetos-via-zip-exemplo`](examples/projetos-via-zip-exemplo) tem quatro retângulos, todos enviados como `.zip`:
+- o CRUD de pedidos em FastAPI + SQLite;
+- o CRUD de estoque em Go com chi, gravado num arquivo JSON;
+- o painel React que faz o CRUD das duas e sobe quando ambas estão `pronto`;
+- o mesmo painel em modo dev.
+
+Os dados das APIs ficam em volumes do próprio retângulo (`mdd-node-<mermaid>-<id>-dados`, em `/data`), então sobrevivem entre execuções.
 
 ## Gatilhos (o texto da seta)
 
@@ -186,6 +222,7 @@ wget -qO- --post-data='{"arquivo":"p.csv"}' "$MDD_EMIT_URL/planilha_pronta"   # 
 | Ver os logs | Selecione o retângulo: a saída da execução mais recente dele aparece embaixo, ao vivo. Os eventos `::mdd emit` ficam destacados |
 | Histórico | Aba **Histórico**: clicar numa execução antiga recolore o desenho e carrega os logs dela |
 | Trocar de mermaid | Menu **☰** (veja [Vários mermaids](#vários-mermaids-menu-)) |
+| Navegar pelo canvas | Barra no canto do canvas: 🖱 **selecionar** (`V`) e ✋ **mover a vista** (`H`, ou segure `Espaço`); **−/100%/+**; ⛶ **ver o fluxo inteiro** (`F`); 🔍 **zoom no selecionado** (`Z`). Arrastar o fundo vazio ou usar o botão do meio também move a vista; a roda rola e **Ctrl+roda** dá zoom no cursor. Um mermaid que não cabe na tela abre enquadrado |
 
 **Segurança:**
 - **Safe-run:** o checkbox na barra, marcado por padrão, pede confirmação antes de rodar, parar ou reiniciar.
@@ -231,8 +268,11 @@ curl -X POST $P/nodes/planilha/inicio          # marca o bloco de início (nao-i
 curl $P/nodes/planilha/spec                    # o .md do container
 curl -X PUT --data-binary @nodes/planilha.md $P/nodes/planilha/spec
 curl -X POST $P/templates/python-service -d '{"x":200,"y":120}'
-curl $P/nodes/py1/files                        # arquivos de nodes/py1/
+curl $P/nodes/py1/files                        # arquivos de nodes/py1/ (com subpastas): [{name, size, text}]
 curl -X PUT --data-binary @main.py $P/nodes/py1/files/main.py
+curl $P/nodes/py1/files/src/util.py            # caminho com subpasta (?download baixa)
+curl -X POST --data-binary @app.zip "$P/nodes/py1/files.zip?mode=replace"   # ou mode=merge
+curl -o py1.zip $P/nodes/py1/files.zip         # baixa a pasta como .zip
 curl -X POST $P/runs -d '{}'                   # roda cada fluxo (ou {"from": "upload"}); idempotente
 curl $P/runs                                   # histórico
 curl $P/runs/current                           # {runs: rodando, latest: a última que terminou}

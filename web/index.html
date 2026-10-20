@@ -54,7 +54,23 @@
         </details>
       </aside>
       <section class="center">
-        <section class="canvas" id="canvas"></section>
+        <section class="canvas" id="canvas">
+          <div class="canvas-tools" role="toolbar" aria-label="Ferramentas do canvas">
+            <div class="ct-group">
+              <button type="button" data-canvas-tool="select" aria-pressed="true" title="Selecionar (V): clicar, arrastar e ligar os retângulos"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 3l7 17 2.5-7.5L21 10z"/><path d="M13.5 13.5l6 6"/></svg></button>
+              <button type="button" data-canvas-tool="pan" aria-pressed="false" title="Mover a vista (H, ou segure Espaço): arraste para ver o resto do fluxo"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M18 11V6a2 2 0 0 0-4 0v5"/><path d="M14 10V4a2 2 0 0 0-4 0v6"/><path d="M10 10.5V6a2 2 0 0 0-4 0v8"/><path d="M18 8a2 2 0 1 1 4 0v6a8 8 0 0 1-8 8h-2c-2.8 0-4.5-.9-6-2.3l-3.6-3.6a2 2 0 0 1 2.8-2.8L7 15"/></svg></button>
+            </div>
+            <div class="ct-group">
+              <button type="button" id="ct-zoom-out" title="Diminuir o zoom (−)"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M5 12h14"/></svg></button>
+              <button type="button" id="ct-zoom-reset" class="ct-zoom" title="Voltar a 100%">100%</button>
+              <button type="button" id="ct-zoom-in" title="Aumentar o zoom (+)"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M5 12h14"/><path d="M12 5v14"/></svg></button>
+            </div>
+            <div class="ct-group">
+              <button type="button" id="ct-fit" title="Ver o fluxo inteiro (F)"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M3 8V5a2 2 0 0 1 2-2h3"/><path d="M16 3h3a2 2 0 0 1 2 2v3"/><path d="M21 16v3a2 2 0 0 1-2 2h-3"/><path d="M8 21H5a2 2 0 0 1-2-2v-3"/><rect x="7.5" y="9" width="9" height="6" rx="1.5"/></svg></button>
+              <button type="button" id="ct-focus" title="Zoom no selecionado (Z)"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M3 8V5a2 2 0 0 1 2-2h3"/><path d="M16 3h3a2 2 0 0 1 2 2v3"/><path d="M21 16v3a2 2 0 0 1-2 2h-3"/><path d="M8 21H5a2 2 0 0 1-2-2v-3"/><circle cx="11" cy="11" r="3.5"/><path d="M13.6 13.6L16.5 16.5"/></svg></button>
+            </div>
+          </div>
+        </section>
         <section class="drawer" id="drawer" data-tab="logs">
           <div class="drawer-head">
             <div class="tabs">
@@ -108,10 +124,15 @@
             <textarea id="np-code" class="np-code" spellcheck="false" aria-label="Markdown do container"></textarea>
             <div class="np-files">
               <div class="np-files-bar">
-                <div class="np-file-list"></div>
-                <button type="button" id="np-file-new" title="Novo arquivo nesta pasta">+ arquivo</button>
+                <button type="button" id="np-file-new" title="Novo arquivo (aceita subpastas: src/util.py)">+ arquivo</button>
                 <button type="button" id="np-file-delete" title="Apaga o arquivo aberto">apagar</button>
+                <span class="np-files-sep"></span>
+                <button type="button" id="np-zip-upload" title="Envia o projeto inteiro (.zip) para esta pasta. Também dá para arrastar e soltar o .zip aqui.">Enviar .zip</button>
+                <label class="np-zip-merge" title="Mesclar: só acrescenta e sobrescreve, sem apagar os arquivos atuais"><input type="checkbox" id="np-zip-merge" /> mesclar</label>
+                <a id="np-zip-download" class="button" download title="Baixa esta pasta como .zip">Baixar .zip</a>
+                <input type="file" id="np-zip-input" accept=".zip,application/zip" hidden />
               </div>
+              <div class="np-file-list"></div>
               <textarea id="np-file" class="np-code" spellcheck="false" aria-label="Conteúdo do arquivo"></textarea>
             </div>
             <div class="np-status"></div>

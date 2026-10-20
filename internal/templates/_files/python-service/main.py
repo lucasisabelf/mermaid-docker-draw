@@ -21,6 +21,4 @@ class Handler(BaseHTTPRequestHandler):
 
 server = HTTPServer(("0.0.0.0", PORT), Handler)
 print(f"ouvindo na porta {PORT}")
-# Avisa o fluxo: setas "pronto" disparam o próximo retângulo.
-print("::mdd emit pronto")
 server.serve_forever()

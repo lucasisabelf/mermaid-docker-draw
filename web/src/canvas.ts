@@ -2,6 +2,7 @@ import { EXPORT_CSS } from './export';
 import { cleanOwner, OWNER_MAX, type DiagramNode } from './model';
 import { portUrl, STATUS_LABEL, type NodeStatus, type Runtime, type RuntimeChange } from './runtime';
 import type { Change, Selection, Store } from './store';
+import { contains, fitBox, lerpView, toScreen, toWorld, union, zoomAt, type Box, type View } from './viewport';
 
 const SVG_NS = 'http://www.w3.org/2000/svg';
 export const DND_TYPE = 'application/x-mermaid-draw';
@@ -44,8 +45,16 @@ export function nodeSize(n: DiagramNode) {
 }
 
 type Point = { x: number; y: number };
+/** select: clicar e arrastar retângulos; pan: a mão, arrastar move a vista. */
+export type Tool = 'select' | 'pan';
+/** Duração da transição do "ver tudo" e do zoom no selecionado. */
+const VIEW_MS = 260;
+/** Zoom no selecionado: até onde ampliar. */
+const FOCUS_ZOOM = 1.6;
 type Drag =
   | { kind: 'move'; id: string; dx: number; dy: number }
+  /** Arrastando a vista: posição do ponteiro (tela) e da câmera no começo. */
+  | { kind: 'pan'; start: Point; view: View; moved: boolean }
   | {
       kind: 'connect';
       from: string;
@@ -98,6 +107,17 @@ function edgeGeometry(a: DiagramNode, b: DiagramNode): { d: string; label: Point
 
 export class Canvas {
   private svg = el('svg', { class: 'canvas-svg' });
+  /** Tudo o que é desenho fica aqui dentro, sob a câmera (translate + scale). */
+  private viewport = el('g', { class: 'viewport' });
+  private view: View = { x: 0, y: 0, k: 1 };
+  private viewAnim = 0;
+  /** O primeiro diagrama que chega é enquadrado se não couber na tela. */
+  private framed = false;
+  tool: Tool = 'select';
+  /** Espaço pressionado: a mão temporária, como em editores de desenho. */
+  private spaceHeld = false;
+  /** A câmera ou a ferramenta mudou (a barra de zoom acompanha). */
+  onView: () => void = () => {};
   private edgeLayer = el('g');
   private nodeLayer = el('g');
   /** Mensagens percorrendo as setas e pulsos nos retângulos: fora das camadas que são redesenhadas. */
@@ -134,12 +154,31 @@ export class Canvas {
       const m = el('marker', { id, viewBox: '0 0 10 10', refX: 10, refY: 5, markerWidth: 9, markerHeight: 9, orient: 'auto-start-reverse' }, defs);
       el('path', { d: 'M0 0 L10 5 L0 10 Z', class: cls }, m);
     }
-    this.svg.append(this.edgeLayer, this.nodeLayer, this.animLayer, this.overlay);
+    this.viewport.append(this.edgeLayer, this.nodeLayer, this.animLayer, this.overlay);
+    this.svg.append(this.viewport);
     host.append(this.svg);
 
     this.svg.addEventListener('pointerdown', this.onDown);
     this.svg.addEventListener('pointermove', this.onMove);
     this.svg.addEventListener('pointerup', this.onUp);
+    this.svg.addEventListener('wheel', this.onWheel, { passive: false });
+    // Botão do meio arrasta a vista; sem isso o navegador abriria a rolagem automática.
+    this.svg.addEventListener('auxclick', (e) => e.preventDefault());
+    window.addEventListener('keydown', (e) => {
+      if (e.key !== ' ' || e.repeat || (e.target as HTMLElement).matches('input, textarea, select, button, [role="button"], [contenteditable]')) return;
+      e.preventDefault();
+      this.spaceHeld = true;
+      this.renderTool();
+    });
+    window.addEventListener('keyup', (e) => {
+      if (e.key !== ' ') return;
+      this.spaceHeld = false;
+      this.renderTool();
+    });
+    window.addEventListener('blur', () => {
+      this.spaceHeld = false;
+      this.renderTool();
+    });
     host.addEventListener('dragover', this.onDragOver);
     host.addEventListener('drop', this.onDrop);
 
@@ -159,9 +198,159 @@ export class Canvas {
     }
   }
 
-  private point(e: { clientX: number; clientY: number }): Point {
+  /** Ponto na tela do canvas (px a partir do canto). */
+  private screen(e: { clientX: number; clientY: number }): Point {
     const r = this.svg.getBoundingClientRect();
     return { x: e.clientX - r.left, y: e.clientY - r.top };
+  }
+
+  /** Ponto no desenho (coordenadas do diagrama, desfazendo a câmera). */
+  private point(e: { clientX: number; clientY: number }): Point {
+    const p = this.screen(e);
+    return toWorld(this.view, p.x, p.y);
+  }
+
+  // ---- câmera ------------------------------------------------------------
+
+  /** Escala atual (1 = 100%). */
+  get zoom() {
+    return this.view.k;
+  }
+
+  setTool(tool: Tool) {
+    this.tool = tool;
+    this.renderTool();
+  }
+
+  private get panning() {
+    return this.tool === 'pan' || this.spaceHeld;
+  }
+
+  private renderTool() {
+    this.svg.classList.toggle('tool-pan', this.panning);
+    this.svg.classList.toggle('dragging-view', this.drag?.kind === 'pan' && this.drag.moved);
+    this.onView();
+  }
+
+  private applyView() {
+    const { x, y, k } = this.view;
+    this.viewport.setAttribute('transform', `translate(${x} ${y}) scale(${k})`);
+    // A grade de pontos do fundo acompanha a câmera.
+    this.host.style.backgroundSize = `${20 * k}px ${20 * k}px`;
+    this.host.style.backgroundPosition = `${x}px ${y}px`;
+    this.editor?.dispatchEvent(new Event('reposition'));
+    this.onView();
+  }
+
+  /** Troca a câmera, com uma transição curta (instantânea com `animate = false` ou movimento reduzido). */
+  private setView(next: View, animate = true) {
+    cancelAnimationFrame(this.viewAnim);
+    if (!animate || reducedMotion()) {
+      this.view = next;
+      return this.applyView();
+    }
+    const from = this.view;
+    const begin = performance.now();
+    const step = (now: number) => {
+      const t = Math.min(1, (now - begin) / VIEW_MS);
+      this.view = lerpView(from, next, t);
+      this.applyView();
+      if (t < 1) this.viewAnim = requestAnimationFrame(step);
+    };
+    this.viewAnim = requestAnimationFrame(step);
+  }
+
+  private size() {
+    const r = this.svg.getBoundingClientRect();
+    return { width: r.width, height: r.height };
+  }
+
+  /** Zoom pelo centro da tela (botões − e +): `factor` multiplica a escala atual. */
+  zoomBy(factor: number) {
+    const { width, height } = this.size();
+    this.setView(zoomAt(this.view, this.view.k * factor, width / 2, height / 2));
+  }
+
+  /** Volta a 100%, mantendo o centro da tela. */
+  resetZoom() {
+    const { width, height } = this.size();
+    this.setView(zoomAt(this.view, 1, width / 2, height / 2));
+  }
+
+  /** Caixa de tudo o que está desenhado (retângulos, setas e textos), em coordenadas do desenho. */
+  private contentBox(): Box | null {
+    const boxes: Box[] = this.store.diagram.nodes.map((n) => {
+      const { w, h } = nodeSize(n);
+      return { x: n.x - w / 2, y: n.y - h / 2, w, h };
+    });
+    // Setas (ciclos e textos) podem passar da borda dos retângulos.
+    if (this.edgeLayer.childElementCount) {
+      const b = this.edgeLayer.getBBox();
+      boxes.push({ x: b.x, y: b.y, w: b.width, h: b.height });
+    }
+    return union(boxes);
+  }
+
+  /** Ver o fluxo inteiro: enquadra todo o desenho (sem ampliar além de 100%). */
+  fitAll(animate = true) {
+    const box = this.contentBox();
+    if (!box) return this.setView({ x: 0, y: 0, k: 1 }, animate);
+    const { width, height } = this.size();
+    this.setView(fitBox(box, width, height, 56, 1), animate);
+  }
+
+  /** Há algo selecionado para o zoom no selecionado? */
+  get hasSelection() {
+    return this.selectionBox() !== null;
+  }
+
+  private selectionBox(): Box | null {
+    const sel = this.store.selection;
+    if (!sel) return null;
+    const ids = sel.kind === 'node' ? [sel.id] : [this.store.edge(sel.id)?.from, this.store.edge(sel.id)?.to];
+    const boxes: Box[] = [];
+    for (const id of ids) {
+      const n = id ? this.store.node(id) : undefined;
+      if (!n) continue;
+      const { w, h } = nodeSize(n);
+      // Folga para o ▶, o status, o link da porta e o "+ responsável" que ficam em volta.
+      boxes.push({ x: n.x - w / 2 - 16, y: n.y - h / 2 - 16, w: w + 32, h: h + 44 });
+    }
+    return union(boxes);
+  }
+
+  /** Zoom no selecionado: centraliza o retângulo (ou as duas pontas da seta) e amplia. */
+  zoomToSelection() {
+    const box = this.selectionBox();
+    if (!box) return false;
+    const { width, height } = this.size();
+    this.setView(fitBox(box, width, height, 60, FOCUS_ZOOM));
+    return true;
+  }
+
+  private onWheel = (e: WheelEvent) => {
+    e.preventDefault();
+    const p = this.screen(e);
+    // Ctrl/⌘ + roda (e a pinça do touchpad, que chega assim) dá zoom no cursor; a roda sozinha rola a vista.
+    if (e.ctrlKey || e.metaKey) {
+      const factor = Math.exp(-e.deltaY * (e.deltaMode === 1 ? 0.05 : 0.0025));
+      cancelAnimationFrame(this.viewAnim);
+      this.view = zoomAt(this.view, this.view.k * factor, p.x, p.y);
+    } else {
+      const unit = e.deltaMode === 1 ? 16 : 1;
+      const dx = (e.shiftKey && !e.deltaX ? e.deltaY : e.deltaX) * unit;
+      const dy = (e.shiftKey && !e.deltaX ? 0 : e.deltaY) * unit;
+      cancelAnimationFrame(this.viewAnim);
+      this.view = { ...this.view, x: this.view.x - dx, y: this.view.y - dy };
+    }
+    this.applyView();
+  };
+
+  /** Começa a arrastar a vista (mão, espaço, botão do meio ou fundo vazio). */
+  private startPan(e: PointerEvent) {
+    cancelAnimationFrame(this.viewAnim);
+    this.drag = { kind: 'pan', start: this.screen(e), view: this.view, moved: false };
+    this.svg.setPointerCapture(e.pointerId);
   }
 
   private nodeAt(clientX: number, clientY: number): string | undefined {
@@ -172,6 +361,11 @@ export class Canvas {
   // ---- interação -------------------------------------------------------
 
   private onDown = (e: PointerEvent) => {
+    // Botão do meio, mão (ferramenta ou espaço): sempre arrasta a vista, nunca mexe no desenho.
+    if (e.button === 1 || (e.button === 0 && this.panning && !(this.drag?.kind === 'connect' && this.drag.sticky))) {
+      e.preventDefault();
+      return this.startPan(e);
+    }
     if (e.button !== 0) return;
     const p = this.point(e);
     const target = e.target as Element;
@@ -239,12 +433,26 @@ export class Canvas {
       this.store.select({ kind: 'edge', id: edgeEl.dataset.edge! });
       return;
     }
+    // Fundo vazio: tira a seleção e, se arrastar, move a vista.
     this.store.select(null);
+    this.startPan(e);
   };
 
   private onMove = (e: PointerEvent) => {
     const d = this.drag;
     if (!d) return;
+    if (d.kind === 'pan') {
+      const s = this.screen(e);
+      if (!d.moved && Math.hypot(s.x - d.start.x, s.y - d.start.y) > 3) {
+        d.moved = true;
+        this.renderTool();
+      }
+      if (d.moved) {
+        this.view = { ...d.view, x: d.view.x + s.x - d.start.x, y: d.view.y + s.y - d.start.y };
+        this.applyView();
+      }
+      return;
+    }
     const p = this.point(e);
     if (this.pendingPlay && Math.hypot(p.x - this.pendingPlay.at.x, p.y - this.pendingPlay.at.y) > 4) this.pendingPlay = null;
     if (d.kind === 'move') {
@@ -257,6 +465,11 @@ export class Canvas {
   };
 
   private onUp = (e: PointerEvent) => {
+    if (this.drag?.kind === 'pan') {
+      this.drag = null;
+      this.renderTool();
+      return;
+    }
     const play = this.pendingPlay;
     this.pendingPlay = null;
     if (play && document.elementFromPoint(e.clientX, e.clientY)?.closest<SVGElement>('[data-play]')?.dataset.play === play.id) {
@@ -335,8 +548,14 @@ export class Canvas {
     input.value = value;
     input.placeholder = { node: 'Texto do retângulo', edge: 'Texto da seta', owner: 'Quem cuida desta etapa?' }[kind];
     if (kind === 'owner') input.maxLength = OWNER_MAX;
-    input.style.left = `${anchor.x}px`;
-    input.style.top = `${anchor.y}px`;
+    // O campo fica sobre o desenho: acompanha a câmera (zoom e arrasto).
+    const place = () => {
+      const s = toScreen(this.view, anchor.x, anchor.y);
+      input.style.left = `${s.x}px`;
+      input.style.top = `${s.y}px`;
+    };
+    place();
+    input.addEventListener('reposition', place);
     this.host.append(input);
     this.editor = input;
     input.focus();
@@ -379,29 +598,17 @@ export class Canvas {
    * recortado ao conteúdo. `null` se não há nada desenhado.
    */
   exportSvg(): { svg: string; width: number; height: number } | null {
-    const { nodes } = this.store.diagram;
-    if (!nodes.length) return null;
-
-    let x0 = Infinity, y0 = Infinity, x1 = -Infinity, y1 = -Infinity;
-    const grow = (x: number, y: number, w: number, h: number) => {
-      x0 = Math.min(x0, x); y0 = Math.min(y0, y); x1 = Math.max(x1, x + w); y1 = Math.max(y1, y + h);
-    };
-    for (const n of nodes) {
-      const { w, h } = nodeSize(n);
-      grow(n.x - w / 2, n.y - h / 2, w, h);
-    }
-    // Setas (ciclos e textos) podem passar da borda dos retângulos.
-    if (this.edgeLayer.childElementCount) {
-      const b = this.edgeLayer.getBBox();
-      grow(b.x, b.y, b.width, b.height);
-    }
+    if (!this.store.diagram.nodes.length) return null;
+    const box = this.contentBox()!;
     const pad = 24;
-    const x = Math.floor(x0 - pad);
-    const y = Math.floor(y0 - pad);
-    const width = Math.ceil(x1 + pad) - x;
-    const height = Math.ceil(y1 + pad) - y;
+    const x = Math.floor(box.x - pad);
+    const y = Math.floor(box.y - pad);
+    const width = Math.ceil(box.x + box.w + pad) - x;
+    const height = Math.ceil(box.y + box.h + pad) - y;
 
     const clone = this.svg.cloneNode(true) as SVGSVGElement;
+    // O exportado é o desenho todo, independente do zoom e da posição da tela.
+    clone.querySelector('.viewport')?.removeAttribute('transform');
     clone.querySelectorAll('.handle, .status, .node-halo, .add-owner, .edge-hit, .owner-hit, .overlay, .anim, .play, .run-badge, .port-chip, title').forEach((e) => e.remove());
     // O desenho exportado é o fluxo, sem o estado de uma execução.
     clone.querySelectorAll('[class*="run-"]').forEach((e) => {
@@ -444,8 +651,17 @@ export class Canvas {
           this.renderAll();
           break;
       }
+      // Ao abrir um mermaid que não cabe na tela, começa vendo o fluxo inteiro.
+      if (!this.framed && this.store.diagram.nodes.length) {
+        this.framed = true;
+        const box = this.contentBox();
+        const { width, height } = this.size();
+        if (box && width && !contains(this.view, box, width, height)) this.fitAll(false);
+      }
     }
     this.renderView();
+    // O zoom no selecionado só vale com algo selecionado.
+    this.onView();
   };
 
   private onRuntime = (c: RuntimeChange) => {

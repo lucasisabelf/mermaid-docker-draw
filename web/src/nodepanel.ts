@@ -1,21 +1,26 @@
 import { parseDocument, type Document } from 'yaml';
 import { api, type Runtime } from './runtime';
 import { toast } from './runpanel';
+import { confirmDialog } from './dialog';
+import { filePath, formatSize, groupFiles, type FileInfo } from './filetree';
 import type { Store } from './store';
 import { API } from './project';
 
 /**
  * Painel do retângulo selecionado: o `.md` do container (nodes/<id>.md), com uma descrição livre e
  * um bloco ```yaml que é um serviço do docker compose. A aba Simples edita os campos mais comuns;
- * a aba Código mostra o `.md` inteiro; a aba Arquivos edita os scripts de nodes/<id>/ (run.sh e cia.).
+ * a aba Código mostra o `.md` inteiro; a aba Arquivos edita os arquivos de nodes/<id>/ (run.sh e cia.,
+ * com subpastas), recebe o .zip de um projeto inteiro e baixa a pasta como .zip.
  * Grava sozinho, um pouco depois da última alteração.
  */
 
 type Tab = 'simple' | 'code' | 'files';
 
 /** Conteúdo cru de um arquivo (o `api` interpretaria um arquivo .json). */
+const fileURL = (id: string, name: string) => `${API}/nodes/${encodeURIComponent(id)}/files/${filePath(name)}`;
+
 async function readFile(id: string, name: string) {
-  const res = await fetch(`${API}/nodes/${encodeURIComponent(id)}/files/${encodeURIComponent(name)}`);
+  const res = await fetch(fileURL(id, name));
   if (!res.ok) throw new Error(`${name}: ${res.status}`);
   return res.text();
 }
@@ -156,6 +161,31 @@ export class NodePanel {
     });
     $(root, '#np-file-new').addEventListener('click', () => void this.newFile());
     $(root, '#np-file-delete').addEventListener('click', () => void this.deleteFile());
+    const zipInput = $<HTMLInputElement>(root, '#np-zip-input');
+    $(root, '#np-zip-upload').addEventListener('click', () => zipInput.click());
+    zipInput.addEventListener('change', () => {
+      const file = zipInput.files?.[0];
+      zipInput.value = '';
+      if (file) void this.uploadZip(file);
+    });
+    // Arrastar e soltar um .zip em qualquer lugar da aba.
+    const drop = $(root, '.np-files');
+    const isFile = (e: DragEvent) => Boolean(e.dataTransfer?.types.includes('Files'));
+    drop.addEventListener('dragover', (e) => {
+      if (!isFile(e)) return;
+      e.preventDefault();
+      drop.classList.add('dropping');
+    });
+    drop.addEventListener('dragleave', (e) => {
+      if (!drop.contains(e.relatedTarget as Node | null)) drop.classList.remove('dropping');
+    });
+    drop.addEventListener('drop', (e) => {
+      drop.classList.remove('dropping');
+      if (!isFile(e)) return;
+      e.preventDefault();
+      const file = e.dataTransfer!.files[0];
+      if (file) void this.uploadZip(file);
+    });
     this.fields = {
       image: $(root, '#np-image'),
       command: $(root, '#np-command'),
@@ -315,30 +345,50 @@ export class NodePanel {
   private async loadFiles(reload: boolean) {
     const id = this.id;
     if (!id) return;
-    let list: { name: string; size: number }[];
+    let list: FileInfo[];
     try {
       list = await api('GET', `${API}/nodes/${encodeURIComponent(id)}/files`);
     } catch (err) {
       return this.setStatus((err as Error).message, true);
     }
     if (this.id !== id) return;
+    $<HTMLAnchorElement>(this.root, '#np-zip-download').href = `${API}/nodes/${encodeURIComponent(id)}/files.zip`;
     this.fileListEl.replaceChildren(
-      ...list.map((f) => {
-        const b = Object.assign(document.createElement('button'), { type: 'button', className: 'np-file', textContent: f.name });
-        b.classList.toggle('active', f.name === this.file.name);
-        b.addEventListener('click', () => void this.openFile(f.name));
-        return b;
+      ...groupFiles(list).map((g) => {
+        const group = Object.assign(document.createElement('div'), { className: 'np-file-group' });
+        if (g.dir) group.append(Object.assign(document.createElement('span'), { className: 'np-file-dir', textContent: `${g.dir}/` }));
+        for (const f of g.files) {
+          if (f.text) {
+            const b = Object.assign(document.createElement('button'), { type: 'button', className: 'np-file', textContent: f.base, title: f.name });
+            b.dataset.name = f.name;
+            b.classList.toggle('active', f.name === this.file.name);
+            b.addEventListener('click', () => void this.openFile(f.name));
+            group.append(b);
+          } else {
+            // Binário ou grande: não abre no editor, só baixa.
+            const a = Object.assign(document.createElement('a'), {
+              className: 'np-file np-file-binary',
+              textContent: `${f.base} ↓`,
+              href: `${fileURL(id, f.name)}?download`,
+              title: `${f.name} · ${formatSize(f.size)} · binário ou grande: só para baixar`,
+            });
+            a.download = f.base;
+            group.append(a);
+          }
+        }
+        return group;
       }),
     );
-    if (!list.length) {
-      this.fileListEl.textContent = 'Sem arquivos. Crie um com "+ arquivo" (ex.: run.sh).';
+    const editable = list.filter((f) => f.text);
+    if (!editable.length) {
+      if (!list.length) this.fileListEl.textContent = 'Sem arquivos. Crie um com "+ arquivo" ou envie o .zip do projeto (dá para arrastar e soltar aqui).';
       this.fileEl.value = '';
       this.fileEl.disabled = true;
       this.file = { name: '', saved: '', text: '' };
       return;
     }
-    const keep = list.some((f) => f.name === this.file.name);
-    if (!keep) await this.openFile(list[0].name);
+    const keep = editable.some((f) => f.name === this.file.name);
+    if (!keep) await this.openFile(editable[0].name);
     else if (reload) await this.openFile(this.file.name);
   }
 
@@ -352,7 +402,7 @@ export class NodePanel {
       this.file = { name, saved: text, text };
       this.fileEl.disabled = false;
       if (this.fileEl.value !== text) this.fileEl.value = text;
-      for (const b of this.fileListEl.querySelectorAll('.np-file')) b.classList.toggle('active', b.textContent === name);
+      for (const b of this.fileListEl.querySelectorAll<HTMLElement>('button.np-file')) b.classList.toggle('active', b.dataset.name === name);
       this.setStatus(`nodes/${id}/${name}`);
     } catch (err) {
       this.setStatus((err as Error).message, true);
@@ -365,7 +415,7 @@ export class NodePanel {
     const { name, text } = this.file;
     if (!id || !name || text === this.file.saved) return;
     try {
-      await api('PUT', `${API}/nodes/${encodeURIComponent(id)}/files/${encodeURIComponent(name)}`, text);
+      await api('PUT', fileURL(id, name), text);
       if (this.id === id && this.file.name === name) this.file.saved = text;
       if (this.id === id) this.setStatus(`salvo · nodes/${id}/${name}`);
     } catch (err) {
@@ -375,10 +425,10 @@ export class NodePanel {
 
   private async newFile() {
     const id = this.id;
-    const name = prompt('Nome do arquivo (ex.: requirements.txt, util.py):')?.trim();
+    const name = prompt('Nome do arquivo (ex.: requirements.txt, src/util.py):')?.trim();
     if (!id || !name) return;
     try {
-      await api('PUT', `${API}/nodes/${encodeURIComponent(id)}/files/${encodeURIComponent(name)}`, '');
+      await api('PUT', fileURL(id, name), '');
       this.file = { name, saved: '', text: '' };
       await this.loadFiles(true);
     } catch (err) {
@@ -391,10 +441,56 @@ export class NodePanel {
     const { name } = this.file;
     if (!id || !name || !confirm(`Apagar ${name}?`)) return;
     try {
-      await api('DELETE', `${API}/nodes/${encodeURIComponent(id)}/files/${encodeURIComponent(name)}`);
+      await api('DELETE', fileURL(id, name));
       this.file = { name: '', saved: '', text: '' };
       await this.loadFiles(false);
     } catch (err) {
+      toast((err as Error).message);
+    }
+  }
+
+  /** Envia o .zip do projeto para nodes/<id>/: substitui o conteúdo (mantendo o run.sh) ou mescla. */
+  private async uploadZip(file: File) {
+    const id = this.id;
+    if (!id) return;
+    if (!/\.zip$/i.test(file.name) && file.type !== 'application/zip' && file.type !== 'application/x-zip-compressed') {
+      return toast(`${file.name} não é um .zip.`);
+    }
+    const merge = $<HTMLInputElement>(this.root, '#np-zip-merge').checked;
+    if (!merge) {
+      const ok = await confirmDialog(
+        `zip:${id}`,
+        `Enviar ${file.name}?`,
+        `Os arquivos de nodes/${id}/ serão substituídos pelo conteúdo do .zip. O run.sh atual fica se o .zip não trouxer um. (Marque "mesclar" para só acrescentar.)`,
+        'Substituir',
+        true,
+      );
+      if (!ok) return;
+    }
+    if (this.file.text !== this.file.saved) await this.saveFile();
+    this.setStatus(`enviando ${file.name}…`);
+    try {
+      const res = await fetch(`${API}/nodes/${encodeURIComponent(id)}/files.zip?mode=${merge ? 'merge' : 'replace'}`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/zip' },
+        body: file,
+      });
+      const out = (await res.json().catch(() => ({}))) as { files?: number; root?: string; skipped?: number; keptRunSh?: boolean; error?: string };
+      if (!res.ok) throw new Error(out.error ?? `envio: ${res.status}`);
+      const extra = [
+        out.root && `pasta ${out.root}/ virou a raiz`,
+        out.keptRunSh && 'run.sh mantido',
+        out.skipped && `${out.skipped} ignorados (node_modules, .git…)`,
+      ].filter(Boolean);
+      const msg = `${out.files} arquivos enviados${extra.length ? ` · ${extra.join(' · ')}` : ''}`;
+      this.file = { name: '', saved: '', text: '' };
+      if (this.id === id) {
+        await this.loadFiles(true);
+        this.setStatus(msg);
+      }
+      toast(msg, false);
+    } catch (err) {
+      if (this.id === id) this.setStatus((err as Error).message, true);
       toast((err as Error).message);
     }
   }

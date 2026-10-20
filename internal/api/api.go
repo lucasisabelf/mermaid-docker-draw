@@ -9,10 +9,12 @@
 //	POST   /api/nodes/:ref/inicio|nao-inicio   marca/desmarca o bloco de início
 //	GET    /api/nodes/:ref/spec                {id, markdown, error?}: o .md do container
 //	PUT    /api/nodes/:ref/spec                grava o .md (corpo em texto); 400 se o yaml for inválido
-//	GET    /api/nodes/:ref/files               arquivos do retângulo (nodes/<id>/)
-//	GET    /api/nodes/:ref/files/:nome         conteúdo de um arquivo
-//	PUT    /api/nodes/:ref/files/:nome         grava (corpo em texto)
-//	DELETE /api/nodes/:ref/files/:nome         apaga
+//	GET    /api/nodes/:ref/files               arquivos do retângulo (nodes/<id>/, com subpastas): [{name, size, text}]
+//	GET    /api/nodes/:ref/files/:caminho      conteúdo de um arquivo (src/App.jsx; ?download baixa)
+//	PUT    /api/nodes/:ref/files/:caminho      grava (corpo em texto)
+//	DELETE /api/nodes/:ref/files/:caminho      apaga
+//	POST   /api/nodes/:ref/files.zip           envia um .zip para a pasta (?mode=replace|merge) → {files, root, skipped, keptRunSh}
+//	GET    /api/nodes/:ref/files.zip           baixa a pasta como .zip
 //	GET    /api/templates                      templates da paleta (Web, Python, Go)
 //	POST   /api/templates/:nome                cria um retângulo do template {x?, y?, text?} → {node, port}
 //	GET    /api/edges                          lista as setas
@@ -40,24 +42,29 @@
 package api
 
 import (
+	"bytes"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
 	"math"
+	"mime"
 	"net/http"
 	"net/url"
 	"os"
+	"path"
 	"path/filepath"
 	"strconv"
 	"strings"
 	"sync"
+	"unicode/utf8"
 
 	"github.com/lucasisabelf/mermaid-docker-draw/internal/diagram"
 	"github.com/lucasisabelf/mermaid-docker-draw/internal/engine"
 	"github.com/lucasisabelf/mermaid-docker-draw/internal/nodespec"
 	"github.com/lucasisabelf/mermaid-docker-draw/internal/runs"
 	"github.com/lucasisabelf/mermaid-docker-draw/internal/templates"
+	"github.com/lucasisabelf/mermaid-docker-draw/internal/zipsafe"
 )
 
 type stored struct {
@@ -232,6 +239,11 @@ func (a *API) fail(w http.ResponseWriter, err error) {
 	var op *diagram.OpError
 	if errors.As(err, &op) {
 		write(w, op.Status, map[string]string{"error": op.Msg})
+		return
+	}
+	var ze *zipsafe.Error
+	if errors.As(err, &ze) {
+		write(w, 400, map[string]string{"error": ze.Msg})
 		return
 	}
 	write(w, 500, map[string]string{"error": err.Error()})
@@ -434,6 +446,8 @@ func (a *API) routeNodes(w http.ResponseWriter, r *http.Request, parts []string,
 		}
 		a.send(w, 200, ev.Fields())
 		return nil
+	case len(parts) == 3 && action == "files.zip":
+		return a.routeFilesZip(w, r, n, source)
 	case len(parts) == 3 && method == http.MethodPost:
 		switch action {
 		case "ativar":
@@ -450,7 +464,7 @@ func (a *API) routeNodes(w http.ResponseWriter, r *http.Request, parts []string,
 		}
 	case len(parts) == 3 && action == "spec":
 		return a.routeSpec(w, r, n, source)
-	case (len(parts) == 3 || len(parts) == 4) && action == "files":
+	case len(parts) >= 3 && action == "files":
 		return a.routeFiles(w, r, parts, n, source)
 	}
 	a.send(w, 404, map[string]string{"error": fmt.Sprintf("Rota não encontrada: %s %s", method, r.URL.Path)})
@@ -557,22 +571,31 @@ func (a *API) routeFiles(w http.ResponseWriter, r *http.Request, parts []string,
 		a.send(w, 200, files)
 		return nil
 	}
-	name := parts[3]
+	// Caminho com subpastas: vem em partes (src/App.jsx) ou num pedaço só (src%2FApp.jsx).
+	name := strings.Join(parts[3:], "/")
 	changed := func() {
 		a.Hub.Publish(map[string]any{"type": "files.updated", "id": n.ID, "name": name, "source": source})
 	}
 	switch r.Method {
 	case http.MethodGet:
-		content, err := a.specs.ReadFile(n.ID, name)
+		content, err := a.specs.ReadBytes(n.ID, name)
 		if errors.Is(err, os.ErrNotExist) {
 			return &diagram.OpError{Status: 404, Msg: fmt.Sprintf("Arquivo %q não encontrado.", name)}
 		}
 		if err != nil {
 			return bad(err)
 		}
-		// Conteúdo exato do arquivo (o send acrescentaria uma quebra de linha).
-		w.Header().Set("Content-Type", "text/plain; charset=utf-8")
-		_, _ = io.WriteString(w, content)
+		// Conteúdo exato do arquivo (o send acrescentaria uma quebra de linha). Texto vai como
+		// text/plain (o editor lê assim); binários com o tipo detectado, para baixar.
+		ctype := http.DetectContentType(content)
+		if strings.HasPrefix(ctype, "text/") || utf8.Valid(content) {
+			ctype = "text/plain; charset=utf-8"
+		}
+		w.Header().Set("Content-Type", ctype)
+		if r.URL.Query().Has("download") {
+			w.Header().Set("Content-Disposition", mime.FormatMediaType("attachment", map[string]string{"filename": path.Base(name)}))
+		}
+		_, _ = w.Write(content)
 		return nil
 	case http.MethodPut:
 		b, err := body(r)
@@ -593,6 +616,39 @@ func (a *API) routeFiles(w http.ResponseWriter, r *http.Request, parts []string,
 		}
 		changed()
 		a.send(w, 204, nil)
+		return nil
+	}
+	a.send(w, 404, map[string]string{"error": "Rota não encontrada: " + r.Method + " " + r.URL.Path})
+	return nil
+}
+
+// routeFilesZip: POST envia um .zip para a pasta do retângulo (?mode=replace|merge) e GET baixa a
+// pasta como .zip.
+func (a *API) routeFilesZip(w http.ResponseWriter, r *http.Request, n *diagram.Node, source string) error {
+	switch r.Method {
+	case http.MethodGet:
+		var buf bytes.Buffer
+		if err := a.specs.WriteZip(n.ID, &buf); err != nil {
+			return err
+		}
+		w.Header().Set("Content-Type", "application/zip")
+		w.Header().Set("Content-Disposition", mime.FormatMediaType("attachment", map[string]string{"filename": n.ID + ".zip"}))
+		_, _ = w.Write(buf.Bytes())
+		return nil
+	case http.MethodPost:
+		data, err := io.ReadAll(io.LimitReader(r.Body, zipsafe.MaxZip+1))
+		if err != nil {
+			return err
+		}
+		if len(data) > zipsafe.MaxZip {
+			return &diagram.OpError{Status: 413, Msg: fmt.Sprintf("O .zip passa do limite de %d MB.", zipsafe.MaxZip>>20)}
+		}
+		res, err := a.specs.ExtractZip(n.ID, data, r.URL.Query().Get("mode"))
+		if err != nil {
+			return err
+		}
+		a.Hub.Publish(map[string]any{"type": "files.updated", "id": n.ID, "name": "", "source": source})
+		a.send(w, 200, res)
 		return nil
 	}
 	a.send(w, 404, map[string]string{"error": "Rota não encontrada: " + r.Method + " " + r.URL.Path})

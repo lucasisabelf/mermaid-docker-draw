@@ -1,6 +1,6 @@
 import mermaid from 'mermaid';
 import './style.css';
-import { Canvas, DND_TYPE } from './canvas';
+import { Canvas, DND_TYPE, type Tool } from './canvas';
 import { downloadPng, downloadSvg } from './export';
 import { parseMermaid, toMermaid, type Diagram } from './model';
 import { EdgePanel } from './edgepanel';
@@ -50,6 +50,24 @@ new NodePanel($('#node-panel'), store, runtime);
 new EdgePanel($('#edge-panel'), store, runtime);
 new ProjectMenu(runPanel);
 canvas.onPlay = (id) => runPanel.play(id);
+
+// ---- barra do canvas: selecionar/mão, zoom, ver tudo e zoom no selecionado ----
+
+const toolButtons = document.querySelectorAll<HTMLButtonElement>('[data-canvas-tool]');
+const zoomLabel = $('#ct-zoom-reset');
+const focusButton = $<HTMLButtonElement>('#ct-focus');
+canvas.onView = () => {
+  for (const b of toolButtons) b.setAttribute('aria-pressed', String(b.dataset.canvasTool === canvas.tool));
+  zoomLabel.textContent = `${Math.round(canvas.zoom * 100)}%`;
+  focusButton.disabled = !canvas.hasSelection;
+};
+for (const b of toolButtons) b.addEventListener('click', () => canvas.setTool(b.dataset.canvasTool as Tool));
+$('#ct-zoom-out').addEventListener('click', () => canvas.zoomBy(1 / 1.25));
+$('#ct-zoom-in').addEventListener('click', () => canvas.zoomBy(1.25));
+zoomLabel.addEventListener('click', () => canvas.resetZoom());
+$('#ct-fit').addEventListener('click', () => canvas.fitAll());
+focusButton.addEventListener('click', () => canvas.zoomToSelection());
+canvas.onView();
 canvas.onTemplate = (name, at) => void fromTemplate(name, at.x, at.y);
 
 /** Retângulo criado no servidor que ainda não chegou pelo SSE: é selecionado assim que chegar. */
@@ -72,7 +90,7 @@ async function fromTemplate(name: string, x: number, y: number) {
   }
 }
 
-const TEMPLATE_ICON: Record<string, string> = { web: '🌐', 'python-service': '🐍', 'python-job': '🐍', 'go-service': '🐹', 'go-job': '🐹' };
+const TEMPLATE_ICON: Record<string, string> = { web: '🌐', 'web-react': '⚛️', 'python-service': '🐍', 'python-job': '🐍', 'go-service': '🐹', 'go-job': '🐹' };
 
 api<Template[]>('GET', '/api/templates').then(
   (list) => {
@@ -134,7 +152,7 @@ function updateHint() {
     ? 'Clique (ou solte) sobre o retângulo de destino. Esc cancela.'
     : store.mode === 'arrow'
       ? 'Modo seta: arraste de um retângulo até outro. Esc volta ao modo seleção.'
-      : 'Cada retângulo é um container. Ao ligar dois, o painel ao lado mostra quando a seta dispara (padrão: seguir ao próximo ao terminar); clique na seta para mudar. I marca o bloco de início e ▶ roda. Duplo clique edita o texto, R define o responsável, Delete remove.';
+      : 'Cada retângulo é um container. Ao ligar dois, o painel ao lado mostra quando a seta dispara (padrão: seguir ao próximo ao terminar); clique na seta para mudar. I marca o bloco de início e ▶ roda. Duplo clique edita o texto, R define o responsável, Delete remove. Arraste o fundo (ou segure Espaço) para mover a vista; Ctrl+roda dá zoom, F mostra tudo e Z dá zoom no selecionado.';
   document.querySelector('[data-tool="arrow"]')!.classList.toggle('active', store.mode === 'arrow');
 }
 
@@ -231,6 +249,14 @@ document.addEventListener('keydown', (e) => {
   } else if (e.key.toLowerCase() === 'r' && store.selection?.kind === 'node' && !e.ctrlKey && !e.metaKey && !e.altKey) {
     e.preventDefault(); // senão a letra cairia no campo que acabou de abrir
     canvas.edit('owner', store.selection.id);
+  } else if (!e.ctrlKey && !e.metaKey && !e.altKey && ['v', 'h', 'f', 'z', '+', '=', '-'].includes(e.key.toLowerCase())) {
+    // Câmera: V seleciona, H mão, F ver tudo, Z zoom no selecionado, + e − zoom.
+    const k = e.key.toLowerCase();
+    if (k === 'v') canvas.setTool('select');
+    else if (k === 'h') canvas.setTool('pan');
+    else if (k === 'f') canvas.fitAll();
+    else if (k === 'z') canvas.zoomToSelection();
+    else canvas.zoomBy(k === '-' ? 1 / 1.25 : 1.25);
   } else if (e.key === 'Escape') {
     if (canvas.connecting) canvas.cancel();
     else if (store.mode === 'arrow') store.setMode('select');

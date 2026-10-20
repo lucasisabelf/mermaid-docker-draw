@@ -511,8 +511,9 @@ func (m *Manager) Duplicate(slug string) (Item, error) {
 	return m.item(next), nil
 }
 
-// reassignPorts troca as portas publicadas dos .md de `dir` por portas livres no workspace,
-// para a cópia rodar ao mesmo tempo que o original.
+// reassignPorts troca as portas publicadas dos .md de `dir` por portas livres no workspace (e o
+// volume de dependências de cada retângulo pelo deste mermaid), para a cópia rodar ao mesmo tempo
+// que o original.
 func (m *Manager) reassignPorts(dir string) error {
 	store := nodespec.Store{Dir: filepath.Join(dir, "nodes"), ProjectDir: dir}
 	others := slices.DeleteFunc(m.allStores(), func(s nodespec.Store) bool { return s.ProjectDir == dir })
@@ -524,10 +525,10 @@ func (m *Manager) reassignPorts(dir string) error {
 			continue
 		}
 		spec, err := store.Load(id, id)
-		if err != nil || len(spec.Service.Ports) == 0 {
+		if err != nil {
 			continue
 		}
-		md := spec.Markdown
+		md := templates.RenameNodeVolume(spec.Markdown, dir, id)
 		for _, p := range spec.Service.Ports {
 			old, err := strconv.Atoi(p.Published)
 			if err != nil {
@@ -540,6 +541,9 @@ func (m *Manager) reassignPorts(dir string) error {
 			next := templates.NextPort(others, m.cfg.PortFree, skip...)
 			taken[next] = true
 			md = replacePort(md, old, next)
+		}
+		if md == spec.Markdown {
+			continue
 		}
 		if err := store.Write(id, md); err != nil {
 			return err

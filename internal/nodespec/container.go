@@ -50,6 +50,13 @@ func (s *Spec) Container(paths Paths) docker.ContainerSpec {
 			c.Env = append(c.Env, k+"="+*v)
 		}
 	}
+	// x-mdd.entry e x-mdd.mode são lidos pelo run.sh dos templates.
+	if s.Options.Entry != "" {
+		c.Env = append(c.Env, "MDD_ENTRY="+s.Options.Entry)
+	}
+	if s.Options.Mode != "" {
+		c.Env = append(c.Env, "MDD_MODE="+s.Options.Mode)
+	}
 	sort.Strings(c.Env)
 	for k, v := range svc.Labels {
 		c.Labels[k] = v

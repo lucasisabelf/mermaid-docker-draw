@@ -214,6 +214,85 @@ button:disabled {
   touch-action: none;
 }
 
+/* Mão: arrastar move a vista (ferramenta, Espaço, botão do meio ou fundo vazio). */
+.canvas-svg.tool-pan,
+.canvas-svg.tool-pan .node,
+.canvas-svg.tool-pan .edge,
+.canvas-svg.tool-pan [data-play],
+.canvas-svg.tool-pan [data-toggle],
+.canvas-svg.tool-pan .handle {
+  cursor: grab;
+}
+
+.canvas-svg.dragging-view,
+.canvas-svg.dragging-view * {
+  cursor: grabbing !important;
+}
+
+.canvas-tools {
+  position: absolute;
+  top: 10px;
+  left: 10px;
+  z-index: 2;
+  display: flex;
+  gap: 6px;
+  flex-wrap: wrap;
+  pointer-events: none;
+}
+
+.ct-group {
+  display: flex;
+  padding: 3px;
+  gap: 2px;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  box-shadow: 0 1px 3px rgb(0 0 0 / 0.08);
+  pointer-events: auto;
+}
+
+.ct-group button {
+  display: grid;
+  place-items: center;
+  min-width: 30px;
+  height: 30px;
+  padding: 0 6px;
+  border: 0;
+  border-radius: 7px;
+  background: transparent;
+  color: var(--text);
+  font-size: 12px;
+  font-variant-numeric: tabular-nums;
+}
+
+.ct-group button:hover:not(:disabled) {
+  background: var(--accent-soft);
+}
+
+.ct-group button[aria-pressed='true'] {
+  background: var(--accent);
+  color: #fff;
+}
+
+.ct-group button:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 1px;
+}
+
+.ct-group svg {
+  width: 18px;
+  height: 18px;
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 1.8;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
+
+.ct-zoom {
+  min-width: 48px !important;
+}
+
 .canvas-svg.mode-arrow .node {
   cursor: crosshair;
 }
@@ -905,31 +984,90 @@ button.icon {
   flex: 1 0 auto;
 }
 
+.np-files.dropping {
+  outline: 2px dashed var(--accent);
+  outline-offset: 2px;
+  border-radius: 8px;
+  background: var(--accent-soft);
+}
+
 .np-files-bar {
   display: flex;
-  align-items: flex-start;
+  flex-wrap: wrap;
+  align-items: center;
   gap: 6px;
 }
 
-.np-files-bar > button {
+.np-files-bar > button,
+.np-files-bar > a.button {
   padding: 2px 8px;
   font-size: 12px;
   white-space: nowrap;
 }
 
-.np-file-list {
+a.button {
+  color: inherit;
+  text-decoration: none;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  cursor: pointer;
+}
+
+a.button:hover {
+  border-color: var(--accent);
+}
+
+.np-files-sep {
   flex: 1;
+}
+
+.np-zip-merge {
   display: flex;
-  flex-wrap: wrap;
-  gap: 4px;
+  align-items: center;
+  gap: 3px;
   font-size: 12px;
   color: var(--muted);
+  cursor: pointer;
+}
+
+.np-file-list {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  max-height: 160px;
+  overflow-y: auto;
+  font-size: 12px;
+  color: var(--muted);
+}
+
+.np-file-group {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 4px;
+}
+
+.np-file-dir {
+  font: 12px ui-monospace, 'Cascadia Code', Menlo, Consolas, monospace;
+  color: var(--muted);
+  margin-right: 2px;
 }
 
 .np-file {
   padding: 2px 8px;
   font: 12px ui-monospace, 'Cascadia Code', Menlo, Consolas, monospace;
   border-radius: 6px;
+}
+
+.np-file-binary {
+  color: var(--muted);
+  text-decoration: none;
+  border: 1px dashed var(--border);
+}
+
+.np-file-binary:hover {
+  border-color: var(--accent);
 }
 
 .np-file.active {

@@ -1,0 +1,48 @@
+{
+  "rev": 11,
+  "diagram": {
+    "nodes": [
+      {
+        "id": "py1",
+        "text": "API de pedidos (FastAPI)",
+        "x": 120,
+        "y": 80,
+        "start": true
+      },
+      {
+        "id": "go1",
+        "text": "API de estoque (Go + chi)",
+        "x": 120,
+        "y": 260,
+        "start": true
+      },
+      {
+        "id": "react1",
+        "text": "Painel React (build)",
+        "x": 460,
+        "y": 170
+      },
+      {
+        "id": "react2",
+        "text": "Painel React (dev)",
+        "x": 460,
+        "y": 380,
+        "start": true
+      }
+    ],
+    "edges": [
+      {
+        "id": "e1",
+        "from": "py1",
+        "to": "react1",
+        "text": "pronto"
+      },
+      {
+        "id": "e2",
+        "from": "go1",
+        "to": "react1",
+        "text": "pronto"
+      }
+    ]
+  }
+}

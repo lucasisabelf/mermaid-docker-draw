@@ -4,9 +4,13 @@
 package nodespec
 
 import (
+	"archive/zip"
+	"bytes"
 	"context"
 	"errors"
 	"fmt"
+	"io"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -14,10 +18,13 @@ import (
 	"strconv"
 	"strings"
 	"time"
+	"unicode/utf8"
 
 	"github.com/compose-spec/compose-go/v2/loader"
 	"github.com/compose-spec/compose-go/v2/types"
 	"gopkg.in/yaml.v3"
+
+	"github.com/lucasisabelf/mermaid-docker-draw/internal/zipsafe"
 )
 
 const (
@@ -26,6 +33,9 @@ const (
 	// KindJob termina sozinho; KindService pode rodar para sempre e é parado quando a execução acaba.
 	KindJob     = "job"
 	KindService = "service"
+	// ModeDev roda o servidor de desenvolvimento (recarga ao vivo) em vez do build; ModeBuild é o padrão.
+	ModeBuild = "build"
+	ModeDev   = "dev"
 	// SharedDir é onde o volume compartilhado da execução aparece em todos os containers.
 	SharedDir = "/mdd/shared"
 )
@@ -34,6 +44,11 @@ const (
 type Options struct {
 	Wait string `yaml:"wait" json:"wait"`
 	Kind string `yaml:"kind" json:"kind"`
+	// Entry é o que o run.sh dos templates roda (ex.: `uvicorn app:app --port $PORT`, ou o pacote Go);
+	// chega ao container como $MDD_ENTRY.
+	Entry string `yaml:"entry" json:"entry,omitempty"`
+	// Mode (build ou dev) chega como $MDD_MODE.
+	Mode string `yaml:"mode" json:"mode,omitempty"`
 }
 
 // Spec é o `.md` de um retângulo já interpretado.
@@ -96,6 +111,9 @@ func Parse(id, markdown, projectDir string) (*Spec, error) {
 	}
 	if !slices.Contains([]string{KindJob, KindService}, opts.Kind) {
 		return nil, fmt.Errorf(`x-mdd.kind deve ser "job" ou "service", não %q`, opts.Kind)
+	}
+	if !slices.Contains([]string{"", ModeBuild, ModeDev}, opts.Mode) {
+		return nil, fmt.Errorf(`x-mdd.mode deve ser "build" ou "dev", não %q`, opts.Mode)
 	}
 	// Sem imagem o compose não valida; a falta dela só vira erro na hora de rodar.
 	if _, ok := service["image"]; !ok {
@@ -193,47 +211,118 @@ func (s Store) Remove(id string) error {
 
 // ---- arquivos do retângulo (nodes/<id>/) ------------------------------------
 
-// MaxFileSize limita cada arquivo editado pela tela.
+// MaxFileSize limita cada arquivo editado pela tela: maiores (e binários) só baixam.
 const MaxFileSize = 1 << 20
 
-var fileNameRe = regexp.MustCompile(`^\w[\w.-]*$`)
+// Cada parte do caminho: letras, números, ., -, _, @ e +; pode começar com ponto (.gitignore),
+// mas nunca ser só pontos.
+var fileSegRe = regexp.MustCompile(`^[\w.@+-]+$`)
 
-// FilesDir é a pasta com os scripts do retângulo, montada em /app pelos templates.
+// FilesDir é a pasta com os arquivos do retângulo, montada em /app pelos templates.
 func (s Store) FilesDir(id string) string { return filepath.Join(s.Dir, id) }
 
-func (s Store) filePath(id, name string) (string, error) {
-	if !fileNameRe.MatchString(name) || strings.Contains(name, "..") {
-		return "", fmt.Errorf("nome de arquivo inválido: %q (use letras, números, ., - e _)", name)
+// CleanFileName valida o caminho de um arquivo do retângulo (com subpastas, ex.: src/App.jsx).
+func CleanFileName(name string) (string, error) {
+	name = strings.ReplaceAll(name, `\`, "/")
+	parts := strings.Split(name, "/")
+	for _, p := range parts {
+		if !fileSegRe.MatchString(p) || strings.Trim(p, ".") == "" {
+			return "", fmt.Errorf("nome de arquivo inválido: %q (use letras, números, ., -, _ e / entre pastas)", name)
+		}
 	}
-	return filepath.Join(s.FilesDir(id), name), nil
+	if zipsafe.Ignored(name) {
+		return "", fmt.Errorf("%q fica numa pasta ignorada (node_modules, .git, .venv, __pycache__)", name)
+	}
+	return name, nil
+}
+
+func (s Store) filePath(id, name string) (string, error) {
+	name, err := CleanFileName(name)
+	if err != nil {
+		return "", err
+	}
+	return filepath.Join(s.FilesDir(id), filepath.FromSlash(name)), nil
 }
 
 type File struct {
+	// Name é o caminho dentro da pasta do retângulo, com / (ex.: src/App.jsx).
 	Name string `json:"name"`
 	Size int64  `json:"size"`
+	// Text: dá para abrir no editor (texto e até MaxFileSize); senão, só download.
+	Text bool `json:"text"`
 }
 
-// Files lista os arquivos do retângulo, com o run.sh primeiro.
-func (s Store) Files(id string) ([]File, error) {
-	entries, err := os.ReadDir(s.FilesDir(id))
-	if errors.Is(err, os.ErrNotExist) {
-		return []File{}, nil
+// isText olha o começo do arquivo: sem byte nulo e UTF-8 válido é texto.
+func isText(p string, size int64) bool {
+	if size > MaxFileSize {
+		return false
 	}
+	f, err := os.Open(p)
+	if err != nil {
+		return false
+	}
+	defer f.Close()
+	buf := make([]byte, 8<<10)
+	n, _ := io.ReadFull(f, buf)
+	buf = buf[:n]
+	if bytes.IndexByte(buf, 0) >= 0 {
+		return false
+	}
+	// Um caractere pode ter sido cortado no fim do pedaço lido.
+	for i := 0; i < utf8.UTFMax && len(buf) > 0 && !utf8.Valid(buf); i++ {
+		buf = buf[:len(buf)-1]
+	}
+	return utf8.Valid(buf)
+}
+
+// Files lista os arquivos do retângulo (com subpastas): run.sh primeiro, depois os da raiz e então
+// as pastas, em ordem alfabética. Pastas ignoradas (node_modules…) não aparecem.
+func (s Store) Files(id string) ([]File, error) {
+	root := s.FilesDir(id)
+	out := []File{}
+	err := filepath.WalkDir(root, func(p string, d fs.DirEntry, err error) error {
+		if errors.Is(err, os.ErrNotExist) && p == root {
+			return filepath.SkipAll
+		}
+		if err != nil {
+			return err
+		}
+		rel, _ := filepath.Rel(root, p)
+		rel = filepath.ToSlash(rel)
+		if rel == "." {
+			return nil
+		}
+		if _, err := CleanFileName(rel); err != nil {
+			if d.IsDir() {
+				return filepath.SkipDir
+			}
+			return nil
+		}
+		if d.IsDir() {
+			return nil
+		}
+		info, err := d.Info()
+		if err != nil || !info.Mode().IsRegular() {
+			return nil
+		}
+		out = append(out, File{Name: rel, Size: info.Size(), Text: isText(p, info.Size())})
+		return nil
+	})
 	if err != nil {
 		return nil, err
 	}
-	out := []File{}
-	for _, e := range entries {
-		if info, err := e.Info(); err == nil && info.Mode().IsRegular() && fileNameRe.MatchString(e.Name()) {
-			out = append(out, File{Name: e.Name(), Size: info.Size()})
+	rank := func(f File) int {
+		switch {
+		case f.Name == "run.sh":
+			return 0
+		case !strings.Contains(f.Name, "/"):
+			return 1
 		}
+		return 2
 	}
 	slices.SortStableFunc(out, func(a, b File) int {
-		if (a.Name == "run.sh") != (b.Name == "run.sh") {
-			if a.Name == "run.sh" {
-				return -1
-			}
-			return 1
+		if d := rank(a) - rank(b); d != 0 {
+			return d
 		}
 		return strings.Compare(a.Name, b.Name)
 	})
@@ -241,12 +330,24 @@ func (s Store) Files(id string) ([]File, error) {
 }
 
 func (s Store) ReadFile(id, name string) (string, error) {
+	b, err := s.ReadBytes(id, name)
+	return string(b), err
+}
+
+// ReadBytes devolve o conteúdo cru (para download, inclusive binários).
+func (s Store) ReadBytes(id, name string) ([]byte, error) {
 	p, err := s.filePath(id, name)
 	if err != nil {
-		return "", err
+		return nil, err
 	}
-	b, err := os.ReadFile(p)
-	return string(b), err
+	return os.ReadFile(p)
+}
+
+func fileMode(name string, exec bool) os.FileMode {
+	if exec || strings.HasSuffix(name, ".sh") {
+		return 0o755
+	}
+	return 0o644
 }
 
 func (s Store) WriteFile(id, name, content string) error {
@@ -257,25 +358,147 @@ func (s Store) WriteFile(id, name, content string) error {
 	if len(content) > MaxFileSize {
 		return fmt.Errorf("arquivo maior que %d KB", MaxFileSize>>10)
 	}
-	if err := os.MkdirAll(s.FilesDir(id), 0o755); err != nil {
+	return writeFile(p, []byte(content), fileMode(name, false))
+}
+
+func writeFile(p string, b []byte, mode os.FileMode) error {
+	if err := os.MkdirAll(filepath.Dir(p), 0o755); err != nil {
 		return err
 	}
-	mode := os.FileMode(0o644)
-	if strings.HasSuffix(name, ".sh") {
-		mode = 0o755
-	}
-	if err := os.WriteFile(p, []byte(content), mode); err != nil {
+	if err := os.WriteFile(p, b, mode); err != nil {
 		return err
 	}
 	return os.Chmod(p, mode)
 }
 
+// DeleteFile apaga o arquivo e as pastas que ficaram vazias por causa dele.
 func (s Store) DeleteFile(id, name string) error {
 	p, err := s.filePath(id, name)
 	if err != nil {
 		return err
 	}
-	return os.Remove(p)
+	if err := os.Remove(p); err != nil {
+		return err
+	}
+	root := s.FilesDir(id)
+	for dir := filepath.Dir(p); dir != root && strings.HasPrefix(dir, root); dir = filepath.Dir(dir) {
+		if os.Remove(dir) != nil {
+			break
+		}
+	}
+	return nil
+}
+
+// ---- .zip da pasta do retângulo -----------------------------------------------
+
+const (
+	// ZipReplace limpa a pasta antes de extrair (mantendo o run.sh se o zip não trouxer um);
+	// ZipMerge só acrescenta e sobrescreve.
+	ZipReplace = "replace"
+	ZipMerge   = "merge"
+)
+
+// ZipResult resume o que um envio de .zip fez.
+type ZipResult struct {
+	Files int `json:"files"`
+	// Root é a pasta única do zip que virou a raiz ("" se não havia).
+	Root    string `json:"root"`
+	Skipped int    `json:"skipped"`
+	// KeptRunSh: o zip não trouxe run.sh e o do template foi mantido.
+	KeptRunSh bool `json:"keptRunSh"`
+}
+
+// ExtractZip grava o conteúdo do .zip na pasta do retângulo. Tudo é validado antes de mexer na pasta.
+func (s Store) ExtractZip(id string, data []byte, mode string) (ZipResult, error) {
+	if mode == "" {
+		mode = ZipReplace
+	}
+	if mode != ZipReplace && mode != ZipMerge {
+		return ZipResult{}, &zipsafe.Error{Msg: fmt.Sprintf(`modo deve ser "replace" ou "merge", não %q`, mode)}
+	}
+	entries, skipped, err := zipsafe.Read(data)
+	if err != nil {
+		return ZipResult{}, err
+	}
+	res := ZipResult{Root: zipsafe.Root(entries), Skipped: skipped}
+	zipsafe.StripRoot(entries, res.Root)
+	hasRun := false
+	for i, e := range entries {
+		name, err := CleanFileName(e.Name)
+		if err != nil {
+			return ZipResult{}, &zipsafe.Error{Msg: "No .zip: " + err.Error()}
+		}
+		entries[i].Name = name
+		hasRun = hasRun || name == "run.sh"
+	}
+	if len(entries) == 0 {
+		return ZipResult{}, &zipsafe.Error{Msg: "O .zip não tem nenhum arquivo."}
+	}
+
+	dir := s.FilesDir(id)
+	if mode == ZipReplace {
+		// Limpa o conteúdo, não a pasta: um container rodando continua vendo a mesma montagem.
+		children, err := os.ReadDir(dir)
+		if err != nil && !errors.Is(err, os.ErrNotExist) {
+			return ZipResult{}, err
+		}
+		for _, c := range children {
+			if c.Name() == "run.sh" && !hasRun {
+				res.KeptRunSh = true
+				continue
+			}
+			if err := os.RemoveAll(filepath.Join(dir, c.Name())); err != nil {
+				return ZipResult{}, err
+			}
+		}
+	}
+	for _, e := range entries {
+		p := filepath.Join(dir, filepath.FromSlash(e.Name))
+		// Um arquivo do zip no lugar de uma pasta que já existe (ou vice-versa, no merge).
+		if info, err := os.Stat(p); err == nil && info.IsDir() {
+			if err := os.RemoveAll(p); err != nil {
+				return res, err
+			}
+		}
+		if err := writeFile(p, e.Data, fileMode(e.Name, e.Exec)); err != nil {
+			return res, fmt.Errorf("%s: %w", e.Name, err)
+		}
+		res.Files++
+	}
+	return res, nil
+}
+
+// WriteZip grava a pasta do retângulo como .zip (sem as pastas ignoradas).
+func (s Store) WriteZip(id string, w io.Writer) error {
+	files, err := s.Files(id)
+	if err != nil {
+		return err
+	}
+	zw := zip.NewWriter(w)
+	for _, f := range files {
+		p := filepath.Join(s.FilesDir(id), filepath.FromSlash(f.Name))
+		info, err := os.Stat(p)
+		if err != nil {
+			return err
+		}
+		h, err := zip.FileInfoHeader(info)
+		if err != nil {
+			return err
+		}
+		h.Name, h.Method = f.Name, zip.Deflate
+		fw, err := zw.CreateHeader(h)
+		if err != nil {
+			return err
+		}
+		b, err := os.ReadFile(p)
+		if err != nil {
+			return err
+		}
+		if _, err := fw.Write(b); err != nil {
+			return err
+		}
+	}
+	return zw.Close()
 }
 
 // Load lê e interpreta o `.md` do retângulo.

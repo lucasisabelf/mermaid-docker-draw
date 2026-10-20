@@ -181,6 +181,14 @@ func TestPortsAcrossProjectsAndDuplicate(t *testing.T) {
 	if _, err := os.Stat(filepath.Join(m.cfg.Dir, "loja-copia", "nodes", "web1", "index.html")); err != nil {
 		t.Error("a cópia deveria levar os arquivos do retângulo")
 	}
+
+	// O volume de dependências (venv, node_modules) é de cada retângulo: a cópia ganha o seu.
+	call(t, srv, "POST", "/api/p/loja/templates/web-react", map[string]any{})
+	call(t, srv, "POST", "/api/projects/loja/duplicate", nil)
+	md, _ = os.ReadFile(filepath.Join(m.cfg.Dir, "loja-copia-2", "nodes", "react1.md"))
+	if !strings.Contains(string(md), "mdd-node-loja-copia-2-react1:/build") || strings.Contains(string(md), "mdd-node-loja-react1") {
+		t.Errorf("a cópia deveria ter o próprio volume:\n%s", md)
+	}
 }
 
 func TestExportImport(t *testing.T) {

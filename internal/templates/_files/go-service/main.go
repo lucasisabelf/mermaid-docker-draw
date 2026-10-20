@@ -24,7 +24,5 @@ func main() {
 		log.Fatal(err)
 	}
 	fmt.Println("ouvindo na porta", port)
-	// Avisa o fluxo: setas "pronto" disparam o próximo retângulo.
-	fmt.Println("::mdd emit pronto")
 	log.Fatal(http.Serve(ln, nil))
 }
